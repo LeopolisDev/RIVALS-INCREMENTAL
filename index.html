@@ -509,6 +509,17 @@
       return Boolean(element.isContentEditable);
     }
 
+    function getMovementKey(event) {
+      if (event.code === "KeyW") return "w";
+      if (event.code === "KeyA") return "a";
+      if (event.code === "KeyS") return "s";
+      if (event.code === "KeyD") return "d";
+
+      const key = typeof event.key === "string" ? event.key.toLowerCase() : "";
+      if (key === "w" || key === "a" || key === "s" || key === "d") return key;
+      return "";
+    }
+
     function randomRange(min, max) {
       return Math.random() * (max - min) + min;
     }
@@ -1072,9 +1083,9 @@
       if (isTypingElement(event.target)) {
         return;
       }
-      const key = event.key.toLowerCase();
-      if (key === "w" || key === "a" || key === "s" || key === "d") {
-        state.pressed[key] = down;
+      const moveKey = getMovementKey(event);
+      if (moveKey) {
+        state.pressed[moveKey] = down;
         event.preventDefault();
       }
     }
