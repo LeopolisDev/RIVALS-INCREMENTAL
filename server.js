@@ -11,7 +11,18 @@ const DEFAULT_DAMAGE = 10;
 const DUEL_SITE_URL = process.env.DUEL_SITE_URL || "";
 
 const app = express();
-app.use(express.static(path.join(__dirname)));
+app.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
+  next();
+});
+app.use(
+  express.static(path.join(__dirname), {
+    etag: false,
+    lastModified: false
+  })
+);
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
