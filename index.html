@@ -148,13 +148,6 @@
       margin-bottom: 6px;
     }
 
-    #nameRow {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 6px;
-      margin-bottom: 6px;
-    }
-
     #nameInput {
       width: 100%;
       border: 1px solid rgba(255, 255, 255, 0.25);
@@ -184,6 +177,50 @@
       font-size: 12px;
       color: #cbe9ff;
       margin-bottom: 6px;
+    }
+
+    #nameModal {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      background: rgba(4, 10, 15, 0.7);
+      backdrop-filter: blur(2px);
+    }
+
+    #nameModal.visible {
+      display: flex;
+    }
+
+    #nameCard {
+      width: min(440px, 100%);
+      background: rgba(10, 16, 24, 0.95);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.45);
+    }
+
+    #nameModalTitle {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      margin-bottom: 8px;
+    }
+
+    #nameModalHint {
+      font-size: 13px;
+      color: #cbe9ff;
+      margin-bottom: 10px;
+    }
+
+    #nameForm {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
     }
 
     #connectionText {
@@ -285,15 +322,21 @@
       </div>
       <div id="onlinePanel">
         <div id="onlineTitle">Online Battle Lobby</div>
-        <div id="nameRow">
-          <input id="nameInput" type="text" maxlength="18" placeholder="Pick unique name">
-          <button id="nameBtn" type="button">Set Name</button>
-        </div>
         <div id="nameStatusText">Name: not set</div>
         <div id="connectionText">Status: offline</div>
         <div id="queueStatusText">1v1 Queue: 0 waiting</div>
         <button id="queueBtn" type="button">Join 1v1 Matchmaking</button>
         <ol id="playerList"></ol>
+      </div>
+    </div>
+  </div>
+  <div id="nameModal">
+    <div id="nameCard">
+      <div id="nameModalTitle">SET YOUR NAME</div>
+      <div id="nameModalHint">Pick a unique name (2-18 chars) to play online.</div>
+      <div id="nameForm">
+        <input id="nameInput" type="text" maxlength="18" placeholder="Pick unique name">
+        <button id="nameBtn" type="button">Set Name</button>
       </div>
     </div>
   </div>
@@ -344,6 +387,8 @@
     const nameInput = document.getElementById("nameInput");
     const nameBtn = document.getElementById("nameBtn");
     const nameStatusText = document.getElementById("nameStatusText");
+    const nameModal = document.getElementById("nameModal");
+    const nameModalHint = document.getElementById("nameModalHint");
     const playerList = document.getElementById("playerList");
 
     const world = {
@@ -405,6 +450,21 @@
       state.keys = normalized;
       saveStoredKeys(normalized);
       return true;
+    }
+
+    function setNameMessage(text) {
+      nameStatusText.textContent = text;
+      nameModalHint.textContent = text.replace(/^Name:\s*/i, "");
+    }
+
+    function setNameModalVisible(visible) {
+      nameModal.classList.toggle("visible", Boolean(visible));
+      if (visible) {
+        setTimeout(() => {
+          nameInput.focus();
+          nameInput.select();
+        }, 0);
+      }
     }
 
     function randomRange(min, max) {
@@ -969,8 +1029,8 @@
     queueBtn.addEventListener("click", () => {
       if (!state.network.connected) return;
       if (!state.network.nameAccepted || state.network.namePending) {
-        nameStatusText.textContent = "Name: set a unique name first";
-        nameInput.focus();
+        setNameMessage("Name: set a unique name first");
+        setNameModalVisible(true);
         return;
       }
       if (state.network.inQueue) {
@@ -984,7 +1044,8 @@
 
     function submitNameSelection(rawName) {
       if (!state.network.connected) {
-        nameStatusText.textContent = "Name: connect to server first";
+        setNameMessage("Name: connect to server first");
+        setNameModalVisible(true);
         return;
       }
 
@@ -992,14 +1053,16 @@
       if (clean.length < 2) {
         state.network.nameAccepted = false;
         state.network.namePending = false;
-        nameStatusText.textContent = "Name: use 2-18 characters";
+        setNameMessage("Name: use 2-18 characters");
+        setNameModalVisible(true);
         updateQueueUi();
         return;
       }
 
       nameInput.value = clean;
       state.network.namePending = true;
-      nameStatusText.textContent = "Name: checking availability...";
+      setNameMessage("Name: checking availability...");
+      setNameModalVisible(true);
       updateQueueUi();
       sendNet({ type: "join", name: clean });
     }
@@ -1161,9 +1224,11 @@
         const name = sanitizeDisplayName(stored || "");
         if (name) {
           nameInput.value = name;
+          setNameModalVisible(true);
           submitNameSelection(name);
         } else {
-          nameStatusText.textContent = "Name: choose a unique name";
+          setNameMessage("Name: choose a unique name");
+          setNameModalVisible(true);
         }
         sendNet({ type: "syncProfile", keys: state.keys, hp: state.playerHp });
         updateQueueUi();
@@ -1177,7 +1242,8 @@
         state.network.nameAccepted = false;
         state.network.namePending = false;
         connectionText.textContent = "Status: offline";
-        nameStatusText.textContent = "Name: disconnected";
+        setNameMessage("Name: disconnected");
+        setNameModalVisible(false);
         releaseMatchWindow();
         updateLobbyList();
         updateQueueUi();
@@ -1219,7 +1285,8 @@
           state.network.namePending = false;
           localStorage.setItem(STORAGE_NAME_KEY, accepted);
           nameInput.value = accepted;
-          nameStatusText.textContent = "Name: " + accepted + " (ready)";
+          setNameMessage("Name: " + accepted + " (ready)");
+          setNameModalVisible(false);
           updateQueueUi();
           return;
         }
@@ -1227,7 +1294,8 @@
         if (message.type === "nameRejected") {
           state.network.namePending = false;
           state.network.nameAccepted = Boolean(state.network.myName);
-          nameStatusText.textContent = "Name: " + (message.reason || "rejected");
+          setNameMessage("Name: " + (message.reason || "rejected"));
+          setNameModalVisible(true);
           updateQueueUi();
           return;
         }
@@ -1235,7 +1303,8 @@
         if (message.type === "nameRequired") {
           state.network.namePending = false;
           state.network.nameAccepted = false;
-          nameStatusText.textContent = "Name: " + (message.reason || "required");
+          setNameMessage("Name: " + (message.reason || "required"));
+          setNameModalVisible(true);
           updateQueueUi();
           return;
         }
