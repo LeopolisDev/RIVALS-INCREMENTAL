@@ -522,6 +522,28 @@
       state.socket.send(JSON.stringify(payload));
     }
 
+    function resolveWebSocketUrl() {
+      const customWs = (window.RIVALS_WS_URL || "").trim();
+      if (customWs) return customWs;
+      if (!window.location.host) return "";
+
+      const host = (window.location.hostname || "").toLowerCase();
+      const isLocalHost =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "::1" ||
+        host.endsWith(".local");
+      const isPrivateIp =
+        /^10\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+
+      if (!isLocalHost && !isPrivateIp) return "";
+
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      return proto + "://" + window.location.host;
+    }
+
     function connect() {
       if (!roomId || !token) {
         statusText.textContent = "Missing room info. Returning to lobby...";
@@ -531,10 +553,19 @@
         return;
       }
 
-      const customWs = (window.RIVALS_WS_URL || "").trim();
-      const proto = window.location.protocol === "https:" ? "wss" : "ws";
-      const fallbackUrl = proto + "://" + window.location.host;
-      const socket = new WebSocket(customWs || fallbackUrl);
+      const wsUrl = resolveWebSocketUrl();
+      if (!wsUrl) {
+        statusText.textContent = "No WebSocket backend configured for this host";
+        return;
+      }
+
+      let socket;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        statusText.textContent = "Failed to open WebSocket connection";
+        return;
+      }
       state.socket = socket;
 
       socket.addEventListener("open", () => {
@@ -546,6 +577,10 @@
       socket.addEventListener("close", () => {
         state.connected = false;
         statusText.textContent = "Disconnected";
+      });
+
+      socket.addEventListener("error", () => {
+        statusText.textContent = "WebSocket connection failed";
       });
 
       socket.addEventListener("message", (event) => {

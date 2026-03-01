@@ -906,17 +906,50 @@
       }
     }
 
+    function resolveWebSocketUrl() {
+      const customWs = (window.RIVALS_WS_URL || "").trim();
+      if (customWs) return customWs;
+      if (!location.host) return "";
+
+      const host = (location.hostname || "").toLowerCase();
+      const isLocalHost =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "::1" ||
+        host.endsWith(".local");
+      const isPrivateIp =
+        /^10\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host);
+
+      // GitHub Pages and other public static hosts don't provide the game WebSocket backend.
+      if (!isLocalHost && !isPrivateIp) return "";
+
+      const proto = location.protocol === "https:" ? "wss" : "ws";
+      return proto + "://" + location.host;
+    }
+
     function connectMultiplayer() {
       if (!location.host) {
         connectionText.textContent = "Status: offline (open via server URL)";
         return;
       }
 
-      const customWs = (window.RIVALS_WS_URL || "").trim();
-      const proto = location.protocol === "https:" ? "wss" : "ws";
-      const fallbackUrl = proto + "://" + location.host;
-      const url = customWs || fallbackUrl;
-      const socket = new WebSocket(url);
+      const url = resolveWebSocketUrl();
+      if (!url) {
+        connectionText.textContent = "Status: offline (set RIVALS_WS_URL for online)";
+        updateQueueUi();
+        return;
+      }
+
+      let socket;
+      try {
+        socket = new WebSocket(url);
+      } catch {
+        connectionText.textContent = "Status: offline (failed to open WebSocket)";
+        updateQueueUi();
+        return;
+      }
       state.network.socket = socket;
 
       socket.addEventListener("open", () => {
@@ -938,6 +971,10 @@
         connectionText.textContent = "Status: offline";
         updateLobbyList();
         updateQueueUi();
+      });
+
+      socket.addEventListener("error", () => {
+        connectionText.textContent = "Status: offline (WebSocket connection failed)";
       });
 
       socket.addEventListener("message", (event) => {
