@@ -188,7 +188,8 @@
       sendTimer: 0,
       bannerText: "",
       bannerTimer: 0,
-      initialized: false
+      initialized: false,
+      hasServerPosition: false
     };
 
     function randomRange(min, max) {
@@ -245,6 +246,34 @@
         }
       }
       oppHpText.textContent = "Opponent HP: " + (opponent ? Math.ceil(opponent.hp) : "--");
+    }
+
+    function syncLocalPlayerFromServer(serverPlayer, previousHp) {
+      const serverX = nxToPx(serverPlayer.x);
+      const serverY = nyToPy(serverPlayer.y);
+
+      if (!state.hasServerPosition) {
+        player.x = serverX;
+        player.y = serverY;
+        state.hasServerPosition = true;
+        return;
+      }
+
+      const dx = serverX - player.x;
+      const dy = serverY - player.y;
+      const distSq = dx * dx + dy * dy;
+      const respawned = previousHp <= 0 && serverPlayer.hp > 0;
+
+      // Large drift or respawn should snap immediately; otherwise blend to avoid rubber-banding.
+      if (respawned || distSq > 120 * 120) {
+        player.x = serverX;
+        player.y = serverY;
+        return;
+      }
+
+      const correction = 0.18;
+      player.x = clamp(player.x + dx * correction, player.radius, world.width - player.radius);
+      player.y = clamp(player.y + dy * correction, player.radius, world.height - player.radius);
     }
 
     function addPopup(x, y, amount, color) {
@@ -602,10 +631,10 @@
           for (const p of message.players) {
             map.set(p.id, p);
             if (p.id === state.myId) {
-              player.x = nxToPx(p.x);
-              player.y = nyToPy(p.y);
+              const previousHp = state.hp;
               state.hp = p.hp;
               state.keys = p.keys;
+              syncLocalPlayerFromServer(p, previousHp);
             }
           }
           state.remotePlayers = map;
