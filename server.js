@@ -9,6 +9,7 @@ const PLAYER_RADIUS_N = 0.022;
 const FIRE_COOLDOWN_MS = 100;
 const DEFAULT_DAMAGE = 10;
 const DUEL_SITE_URL = process.env.DUEL_SITE_URL || "";
+const BUILD_ID = process.env.BUILD_ID || String(Date.now());
 
 const app = express();
 app.use((req, res, next) => {
@@ -17,12 +18,39 @@ app.use((req, res, next) => {
   res.setHeader("Expires", "0");
   next();
 });
+app.use((req, res, next) => {
+  if (req.method !== "GET") return next();
+  if (req.path !== "/" && !req.path.endsWith(".html")) return next();
+
+  const queryBuild = typeof req.query.v === "string" ? req.query.v : "";
+  if (queryBuild === BUILD_ID) return next();
+
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(req.query || {})) {
+    if (key === "v") continue;
+    if (Array.isArray(value)) {
+      for (const part of value) {
+        if (typeof part === "string") params.append(key, part);
+      }
+      continue;
+    }
+    if (typeof value === "string") {
+      params.set(key, value);
+    }
+  }
+  params.set("v", BUILD_ID);
+
+  res.redirect(302, req.path + "?" + params.toString());
+});
 app.use(
   express.static(path.join(__dirname), {
     etag: false,
     lastModified: false
   })
 );
+app.get("/__build", (_req, res) => {
+  res.json({ buildId: BUILD_ID });
+});
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
