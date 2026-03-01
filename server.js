@@ -4,7 +4,7 @@ const path = require("path");
 const { WebSocketServer } = require("ws");
 
 const PORT = process.env.PORT || 3000;
-const PLAYER_MAX_HP = 100;
+const PLAYER_MAX_HP = 150;
 const PLAYER_RADIUS_N = 0.022;
 const FIRE_COOLDOWN_MS = 100;
 const DEFAULT_DAMAGE = 10;

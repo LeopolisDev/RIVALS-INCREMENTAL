@@ -50,7 +50,7 @@
       height: min(920px, calc(100dvh - 24px));
       min-height: 640px;
       display: grid;
-      grid-template-rows: auto 1fr 130px;
+      grid-template-rows: auto 1fr 210px;
       gap: 12px;
     }
 
@@ -116,6 +116,7 @@
       border: 1px solid rgba(255, 255, 255, 0.15);
       border-radius: 12px;
       padding: 12px;
+      min-height: 190px;
       user-select: none;
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -313,8 +314,8 @@
         <div id="title">RIVALS INCREMENTAL</div>
         <div id="stats">
           <span id="keysText">Keys: 0</span>
-          <span id="playerHpText">Your HP: 100</span>
-          <span id="enemyHpText">Enemy HP: 150</span>
+          <span id="playerHpText">Your HP: 150</span>
+          <span id="enemyHpText">Enemy HP: 450</span>
         </div>
       </div>
       <div id="rightHud">
@@ -362,6 +363,9 @@
     window.RIVALS_WS_URL = "wss://rivals-incremental.onrender.com";
     const STORAGE_NAME_KEY = "rivals_name";
     const STORAGE_KEYS_KEY = "rivals_keys";
+    const PLAYER_MAX_HP = 150;
+    const ENEMY_COUNT = 3;
+    const ENEMY_MAX_HP = 150;
 
     function normalizeKeys(value) {
       if (!Number.isFinite(value)) return 0;
@@ -432,15 +436,15 @@
     const enemyGun = {
       cooldownMs: 800,
       bulletSpeed: 300,
-      damage: 8
+      damage: 10
     };
 
     const state = {
       pressed: { w: false, a: false, s: false, d: false },
       mouse: { x: 0, y: 0, down: false },
       keys: loadStoredKeys(),
-      playerHp: 100,
-      enemy: null,
+      playerHp: PLAYER_MAX_HP,
+      enemies: [],
       playerBullets: [],
       enemyBullets: [],
       networkBullets: [],
@@ -528,17 +532,17 @@
         player.y = clamp(player.y, player.radius, world.height - player.radius);
       }
 
-      if (state.enemy) {
-        state.enemy.x = clamp(state.enemy.x, state.enemy.radius, world.width - state.enemy.radius);
-        state.enemy.y = clamp(state.enemy.y, state.enemy.radius, world.height - state.enemy.radius);
+      for (const enemy of state.enemies) {
+        enemy.x = clamp(enemy.x, enemy.radius, world.width - enemy.radius);
+        enemy.y = clamp(enemy.y, enemy.radius, world.height - enemy.radius);
       }
     }
     window.addEventListener("resize", resize);
 
-    function spawnEnemy() {
+    function createEnemy() {
       const radius = 18;
       const speed = randomRange(70, 140);
-      const maxHp = 150;
+      const maxHp = ENEMY_MAX_HP;
       let x = randomRange(radius, world.width - radius);
       let y = randomRange(radius, world.height - radius);
 
@@ -555,7 +559,7 @@
       }
 
       const angle = randomRange(0, Math.PI * 2);
-      state.enemy = {
+      return {
         x,
         y,
         radius,
@@ -567,14 +571,24 @@
         speed,
         shootTimer: randomRange(0.25, 0.7)
       };
+    }
+
+    function spawnEnemies() {
+      state.enemies = [];
+      for (let i = 0; i < ENEMY_COUNT; i += 1) {
+        state.enemies.push(createEnemy());
+      }
       updateHud();
     }
 
     function updateHud() {
       keysText.textContent = "Keys: " + state.keys;
       playerHpText.textContent = "Your HP: " + Math.max(0, Math.ceil(state.playerHp));
-      const hp = state.enemy ? Math.max(0, Math.floor(state.enemy.hp)) : 0;
-      enemyHpText.textContent = "Enemy HP: " + hp;
+      let totalHp = 0;
+      for (const enemy of state.enemies) {
+        totalHp += Math.max(0, Math.floor(enemy.hp));
+      }
+      enemyHpText.textContent = "Enemy HP: " + totalHp;
     }
 
     function updatePlayer(dt) {
@@ -597,41 +611,40 @@
       player.y = clamp(player.y, player.radius, world.height - player.radius);
     }
 
-    function updateEnemy(dt) {
-      const enemy = state.enemy;
-      if (!enemy) return;
+    function updateEnemies(dt) {
+      for (const enemy of state.enemies) {
+        enemy.turnTimer -= dt;
+        if (enemy.turnTimer <= 0) {
+          const angle = randomRange(0, Math.PI * 2);
+          enemy.vx = Math.cos(angle) * enemy.speed;
+          enemy.vy = Math.sin(angle) * enemy.speed;
+          enemy.turnTimer = randomRange(0.5, 1.8);
+        }
 
-      enemy.turnTimer -= dt;
-      if (enemy.turnTimer <= 0) {
-        const angle = randomRange(0, Math.PI * 2);
-        enemy.vx = Math.cos(angle) * enemy.speed;
-        enemy.vy = Math.sin(angle) * enemy.speed;
-        enemy.turnTimer = randomRange(0.5, 1.8);
-      }
+        enemy.x += enemy.vx * dt;
+        enemy.y += enemy.vy * dt;
 
-      enemy.x += enemy.vx * dt;
-      enemy.y += enemy.vy * dt;
+        if (enemy.x < enemy.radius) {
+          enemy.x = enemy.radius;
+          enemy.vx *= -1;
+        } else if (enemy.x > world.width - enemy.radius) {
+          enemy.x = world.width - enemy.radius;
+          enemy.vx *= -1;
+        }
 
-      if (enemy.x < enemy.radius) {
-        enemy.x = enemy.radius;
-        enemy.vx *= -1;
-      } else if (enemy.x > world.width - enemy.radius) {
-        enemy.x = world.width - enemy.radius;
-        enemy.vx *= -1;
-      }
+        if (enemy.y < enemy.radius) {
+          enemy.y = enemy.radius;
+          enemy.vy *= -1;
+        } else if (enemy.y > world.height - enemy.radius) {
+          enemy.y = world.height - enemy.radius;
+          enemy.vy *= -1;
+        }
 
-      if (enemy.y < enemy.radius) {
-        enemy.y = enemy.radius;
-        enemy.vy *= -1;
-      } else if (enemy.y > world.height - enemy.radius) {
-        enemy.y = world.height - enemy.radius;
-        enemy.vy *= -1;
-      }
-
-      enemy.shootTimer -= dt;
-      if (enemy.shootTimer <= 0) {
-        enemyShootAtPlayer(enemy);
-        enemy.shootTimer = enemyGun.cooldownMs / 1000;
+        enemy.shootTimer -= dt;
+        if (enemy.shootTimer <= 0) {
+          enemyShootAtPlayer(enemy);
+          enemy.shootTimer = enemyGun.cooldownMs / 1000;
+        }
       }
     }
 
@@ -716,24 +729,26 @@
 
         let hit = false;
 
-        const enemy = state.enemy;
-        if (enemy && enemy.hp > 0) {
+        for (let i = 0; i < state.enemies.length; i += 1) {
+          const enemy = state.enemies[i];
+          if (enemy.hp <= 0) continue;
+
           const ex = bullet.x - enemy.x;
           const ey = bullet.y - enemy.y;
-          if (ex * ex + ey * ey <= enemy.radius * enemy.radius) {
-            enemy.hp -= bullet.damage;
-            addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), bullet.damage);
-            if (enemy.hp <= 0) {
-              setLocalKeys(state.keys + 1);
-              if (state.network.connected) {
-                sendNet({ type: "addKey", amount: 1 });
-              }
-              spawnEnemy();
-            } else {
-              updateHud();
+          if (ex * ex + ey * ey > enemy.radius * enemy.radius) continue;
+
+          enemy.hp -= bullet.damage;
+          addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), bullet.damage);
+          if (enemy.hp <= 0) {
+            setLocalKeys(state.keys + 1);
+            if (state.network.connected) {
+              sendNet({ type: "addKey", amount: 1 });
             }
-            hit = true;
+            state.enemies[i] = createEnemy();
           }
+          updateHud();
+          hit = true;
+          break;
         }
         if (hit) continue;
 
@@ -787,14 +802,14 @@
     }
 
     function applyDamageToLocalPlayer(amount, px, py) {
-      state.playerHp = clamp(state.playerHp - amount, 0, 100);
+      state.playerHp = clamp(state.playerHp - amount, 0, PLAYER_MAX_HP);
       addDamagePopup(px + randomRange(-8, 8), py + randomRange(-8, 8), amount);
       if (state.network.connected) {
         sendNet({ type: "setHp", hp: state.playerHp });
       }
 
       if (state.playerHp <= 0) {
-        state.playerHp = 100;
+        state.playerHp = PLAYER_MAX_HP;
         player.x = world.width * 0.5;
         player.y = world.height * 0.5;
         if (state.network.connected) {
@@ -856,7 +871,7 @@
       ctx.fillRect(0, 0, world.width, world.height);
 
       drawLaser();
-      drawEnemy();
+      drawEnemies();
       drawPlayerBullets();
       drawEnemyBullets();
       drawNetworkBullets();
@@ -875,7 +890,7 @@
       ctx.stroke();
 
       const hpWidth = 64;
-      const hpRatio = clamp(state.playerHp / 100, 0, 1);
+      const hpRatio = clamp(state.playerHp / PLAYER_MAX_HP, 0, 1);
       const hpX = player.x - hpWidth * 0.5;
       const hpY = player.y - player.radius - 14;
       ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
@@ -884,36 +899,36 @@
       ctx.fillRect(hpX, hpY, hpWidth * hpRatio, 6);
     }
 
-    function drawEnemy() {
-      const enemy = state.enemy;
-      if (!enemy) return;
-      ctx.beginPath();
-      ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
-      ctx.fillStyle = "#ff4c4c";
-      ctx.fill();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255,255,255,0.6)";
-      ctx.stroke();
+    function drawEnemies() {
+      for (const enemy of state.enemies) {
+        ctx.beginPath();
+        ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "#ff4c4c";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(255,255,255,0.6)";
+        ctx.stroke();
 
-      const barWidth = 76;
-      const barHeight = 8;
-      const hpRatio = clamp(enemy.hp / enemy.maxHp, 0, 1);
-      const barX = enemy.x - barWidth * 0.5;
-      const barY = enemy.y + enemy.radius + 10;
+        const barWidth = 76;
+        const barHeight = 8;
+        const hpRatio = clamp(enemy.hp / enemy.maxHp, 0, 1);
+        const barX = enemy.x - barWidth * 0.5;
+        const barY = enemy.y + enemy.radius + 10;
 
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(barX, barY, barWidth, barHeight);
-      ctx.fillStyle = "#43e06a";
-      ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
-      ctx.strokeRect(barX, barY, barWidth, barHeight);
+        ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+        ctx.fillRect(barX, barY, barWidth, barHeight);
+        ctx.fillStyle = "#43e06a";
+        ctx.fillRect(barX, barY, barWidth * hpRatio, barHeight);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.35)";
+        ctx.strokeRect(barX, barY, barWidth, barHeight);
 
-      ctx.font = "bold 12px Segoe UI";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "top";
-      ctx.fillStyle = "#43e06a";
-      ctx.fillText(Math.ceil(enemy.hp) + "HP", enemy.x, barY + barHeight + 2);
+        ctx.font = "bold 12px Segoe UI";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        ctx.fillStyle = "#43e06a";
+        ctx.fillText(Math.ceil(enemy.hp) + "HP", enemy.x, barY + barHeight + 2);
+      }
     }
 
     function drawEnemyBullets() {
@@ -958,7 +973,7 @@
         ctx.stroke();
 
         const hpW = 58;
-        const hpR = clamp(netPlayer.hp / 100, 0, 1);
+        const hpR = clamp(netPlayer.hp / (netPlayer.maxHp || PLAYER_MAX_HP), 0, 1);
         ctx.fillStyle = "rgba(0,0,0,0.4)";
         ctx.fillRect(px - hpW / 2, py - player.radius - 14, hpW, 6);
         ctx.fillStyle = "#57e07f";
@@ -1340,7 +1355,7 @@
             setLocalKeys(message.keys);
           }
           if (Number.isFinite(message.hp)) {
-            state.playerHp = clamp(Math.round(message.hp), 0, 100);
+            state.playerHp = clamp(Math.round(message.hp), 0, PLAYER_MAX_HP);
           }
           updateHud();
           return;
@@ -1449,7 +1464,7 @@
     }
 
     resize();
-    spawnEnemy();
+    spawnEnemies();
     updateHud();
     nameBtn.addEventListener("click", () => submitNameSelection());
     changeNameBtn.addEventListener("click", () => {
@@ -1482,7 +1497,7 @@
       lastTime = now;
 
       updatePlayer(dt);
-      updateEnemy(dt);
+      updateEnemies(dt);
       updatePlayerBullets(dt);
       updateEnemyBullets(dt);
       updateNetworkBullets(dt);
