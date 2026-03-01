@@ -169,6 +169,15 @@ wss.on("connection", (socket) => {
         100
       );
 
+      broadcast({
+        type: "shotFired",
+        shooterId: me.id,
+        ox,
+        oy,
+        dx,
+        dy
+      });
+
       for (const target of players.values()) {
         if (target.id === me.id) continue;
         if (target.hp <= 0) continue;

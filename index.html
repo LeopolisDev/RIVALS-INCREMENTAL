@@ -225,6 +225,8 @@
   </div>
 
   <script>
+    window.RIVALS_WS_URL = window.RIVALS_WS_URL || "";
+
     const arenaWrap = document.getElementById("arenaWrap");
     const canvas = document.getElementById("gameCanvas");
     const ctx = canvas.getContext("2d");
@@ -248,6 +250,8 @@
 
     const gun = {
       damage: 10,
+      bulletSpeed: 720,
+      bulletLife: 1.2,
       cooldownMs: 100,
       lastShotTime: -Infinity
     };
@@ -264,7 +268,9 @@
       keys: 0,
       playerHp: 100,
       enemy: null,
+      playerBullets: [],
       enemyBullets: [],
+      networkBullets: [],
       popups: [],
       initialized: false,
       network: {
@@ -468,6 +474,99 @@
       state.enemyBullets = next;
     }
 
+    function spawnPlayerBullet(dirX, dirY) {
+      const startOffset = player.radius + 4;
+      state.playerBullets.push({
+        x: player.x + dirX * startOffset,
+        y: player.y + dirY * startOffset,
+        vx: dirX * gun.bulletSpeed,
+        vy: dirY * gun.bulletSpeed,
+        damage: gun.damage,
+        life: gun.bulletLife
+      });
+    }
+
+    function spawnNetworkBulletVisual(ox, oy, dx, dy) {
+      const pxOx = nxToPx(ox);
+      const pyOy = nyToPy(oy);
+      let pxDx = dx * world.width;
+      let pyDy = dy * world.height;
+      const len = Math.hypot(pxDx, pyDy);
+      if (!len) return;
+      pxDx /= len;
+      pyDy /= len;
+      state.networkBullets.push({
+        x: pxOx,
+        y: pyOy,
+        vx: pxDx * gun.bulletSpeed,
+        vy: pyDy * gun.bulletSpeed,
+        life: gun.bulletLife
+      });
+    }
+
+    function updatePlayerBullets(dt) {
+      const next = [];
+      for (const bullet of state.playerBullets) {
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
+        bullet.life -= dt;
+        if (bullet.life <= 0) continue;
+        if (bullet.x < 0 || bullet.x > world.width || bullet.y < 0 || bullet.y > world.height) continue;
+
+        let hit = false;
+
+        const enemy = state.enemy;
+        if (enemy && enemy.hp > 0) {
+          const ex = bullet.x - enemy.x;
+          const ey = bullet.y - enemy.y;
+          if (ex * ex + ey * ey <= enemy.radius * enemy.radius) {
+            enemy.hp -= bullet.damage;
+            addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), bullet.damage);
+            if (enemy.hp <= 0) {
+              state.keys += 1;
+              if (state.network.connected) {
+                sendNet({ type: "addKey", amount: 1 });
+              }
+              spawnEnemy();
+            } else {
+              updateHud();
+            }
+            hit = true;
+          }
+        }
+        if (hit) continue;
+
+        for (const netPlayer of state.network.remotePlayers.values()) {
+          if (netPlayer.id === state.network.myId) continue;
+          const px = nxToPx(netPlayer.x);
+          const py = nyToPy(netPlayer.y);
+          const dx = bullet.x - px;
+          const dy = bullet.y - py;
+          if (dx * dx + dy * dy <= player.radius * player.radius) {
+            hit = true;
+            break;
+          }
+        }
+        if (hit) continue;
+
+        next.push(bullet);
+      }
+      state.playerBullets = next;
+    }
+
+    function updateNetworkBullets(dt) {
+      const next = [];
+      for (const bullet of state.networkBullets) {
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
+        bullet.life -= dt;
+        if (bullet.life <= 0) continue;
+        if (bullet.x < 0 || bullet.x > world.width || bullet.y < 0 || bullet.y > world.height) continue;
+        next.push(bullet);
+      }
+      state.networkBullets = next;
+    }
+
     function addDamagePopup(x, y, amount, color = "rgba(255, 36, 36, 1)") {
       state.popups.push({
         x,
@@ -486,20 +585,6 @@
       state.popups = state.popups.filter((popup) => popup.life > 0);
     }
 
-    function rayHitsEnemy(originX, originY, dirX, dirY, enemy) {
-      const ox = originX - enemy.x;
-      const oy = originY - enemy.y;
-      const b = 2 * (ox * dirX + oy * dirY);
-      const c = ox * ox + oy * oy - enemy.radius * enemy.radius;
-      const disc = b * b - 4 * c;
-      if (disc < 0) return false;
-
-      const sqrtDisc = Math.sqrt(disc);
-      const t1 = (-b - sqrtDisc) / 2;
-      const t2 = (-b + sqrtDisc) / 2;
-      return t1 >= 0 || t2 >= 0;
-    }
-
     function applyDamageToLocalPlayer(amount, px, py) {
       state.playerHp = clamp(state.playerHp - amount, 0, 100);
       addDamagePopup(px + randomRange(-8, 8), py + randomRange(-8, 8), amount);
@@ -516,24 +601,6 @@
         }
       }
       updateHud();
-    }
-
-    function shootLocalEnemy(dirX, dirY) {
-      const enemy = state.enemy;
-      if (!enemy) return;
-      if (!rayHitsEnemy(player.x, player.y, dirX, dirY, enemy)) return;
-
-      enemy.hp -= gun.damage;
-      addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), gun.damage);
-      if (enemy.hp <= 0) {
-        state.keys += 1;
-        if (state.network.connected) {
-          sendNet({ type: "addKey", amount: 1 });
-        }
-        spawnEnemy();
-      } else {
-        updateHud();
-      }
     }
 
     function shootRemotePlayers(dirX, dirY) {
@@ -567,7 +634,7 @@
       netDx /= netLen;
       netDy /= netLen;
 
-      shootLocalEnemy(pxDx, pxDy);
+      spawnPlayerBullet(pxDx, pxDy);
       shootRemotePlayers(netDx, netDy);
     }
 
@@ -589,7 +656,9 @@
 
       drawLaser();
       drawEnemy();
+      drawPlayerBullets();
       drawEnemyBullets();
+      drawNetworkBullets();
       drawRemotePlayers();
       drawDamagePopups();
       drawPlayer();
@@ -651,6 +720,24 @@
         ctx.beginPath();
         ctx.arc(bullet.x, bullet.y, 4, 0, Math.PI * 2);
         ctx.fillStyle = "#ff9e66";
+        ctx.fill();
+      }
+    }
+
+    function drawPlayerBullets() {
+      for (const bullet of state.playerBullets) {
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = "#f6f2dc";
+        ctx.fill();
+      }
+    }
+
+    function drawNetworkBullets() {
+      for (const bullet of state.networkBullets) {
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffe095";
         ctx.fill();
       }
     }
@@ -780,8 +867,10 @@
         return;
       }
 
+      const customWs = (window.RIVALS_WS_URL || "").trim();
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      const url = proto + "://" + location.host;
+      const fallbackUrl = proto + "://" + location.host;
+      const url = customWs || fallbackUrl;
       const socket = new WebSocket(url);
       state.network.socket = socket;
 
@@ -856,6 +945,19 @@
           return;
         }
 
+        if (message.type === "shotFired") {
+          if (message.shooterId === state.network.myId) return;
+          if (
+            Number.isFinite(message.ox) &&
+            Number.isFinite(message.oy) &&
+            Number.isFinite(message.dx) &&
+            Number.isFinite(message.dy)
+          ) {
+            spawnNetworkBulletVisual(message.ox, message.oy, message.dx, message.dy);
+          }
+          return;
+        }
+
         if (message.type === "kill" && message.targetId === state.network.myId) {
           state.network.needsRespawnSync = true;
         }
@@ -890,7 +992,9 @@
 
       updatePlayer(dt);
       updateEnemy(dt);
+      updatePlayerBullets(dt);
       updateEnemyBullets(dt);
+      updateNetworkBullets(dt);
       updatePopups(dt);
       tryShoot(now);
       sendNetworkState(dt);
