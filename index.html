@@ -398,6 +398,7 @@
 
     const arenaWrap = document.getElementById("arenaWrap");
     const canvas = document.getElementById("gameCanvas");
+    canvas.tabIndex = -1;
     const ctx = canvas.getContext("2d");
     const keysText = document.getElementById("keysText");
     const playerHpText = document.getElementById("playerHpText");
@@ -427,7 +428,7 @@
 
     const gun = {
       damage: 10,
-      bulletSpeed: 720,
+      bulletSpeed: 2200,
       bulletLife: 1.2,
       cooldownMs: 100,
       lastShotTime: -Infinity
@@ -435,7 +436,7 @@
 
     const enemyGun = {
       cooldownMs: 800,
-      bulletSpeed: 300,
+      bulletSpeed: 1600,
       damage: 10
     };
 
@@ -482,11 +483,33 @@
     function setNameModalVisible(visible) {
       nameModal.classList.toggle("visible", Boolean(visible));
       if (visible) {
+        resetMovementKeys();
         setTimeout(() => {
           nameInput.focus();
           nameInput.select();
         }, 0);
+        return;
       }
+
+      resetMovementKeys();
+      nameInput.blur();
+      if (typeof canvas.focus === "function") {
+        canvas.focus();
+      }
+    }
+
+    function resetMovementKeys() {
+      state.pressed.w = false;
+      state.pressed.a = false;
+      state.pressed.s = false;
+      state.pressed.d = false;
+    }
+
+    function isTypingElement(element) {
+      if (!element) return false;
+      const tag = (element.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") return true;
+      return Boolean(element.isContentEditable);
     }
 
     function randomRange(min, max) {
@@ -729,29 +752,6 @@
 
         let hit = false;
 
-        for (let i = 0; i < state.enemies.length; i += 1) {
-          const enemy = state.enemies[i];
-          if (enemy.hp <= 0) continue;
-
-          const ex = bullet.x - enemy.x;
-          const ey = bullet.y - enemy.y;
-          if (ex * ex + ey * ey > enemy.radius * enemy.radius) continue;
-
-          enemy.hp -= bullet.damage;
-          addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), bullet.damage);
-          if (enemy.hp <= 0) {
-            setLocalKeys(state.keys + 1);
-            if (state.network.connected) {
-              sendNet({ type: "addKey", amount: 1 });
-            }
-            state.enemies[i] = createEnemy();
-          }
-          updateHud();
-          hit = true;
-          break;
-        }
-        if (hit) continue;
-
         for (const netPlayer of state.network.remotePlayers.values()) {
           if (netPlayer.id === state.network.myId) continue;
           const px = nxToPx(netPlayer.x);
@@ -831,6 +831,48 @@
       });
     }
 
+    function rayHitsEnemy(enemy, ox, oy, dx, dy) {
+      const toCx = enemy.x - ox;
+      const toCy = enemy.y - oy;
+      const t = toCx * dx + toCy * dy;
+      if (t < 0) return null;
+
+      const closestX = ox + dx * t;
+      const closestY = oy + dy * t;
+      const offX = enemy.x - closestX;
+      const offY = enemy.y - closestY;
+      if (offX * offX + offY * offY > enemy.radius * enemy.radius) return null;
+      return t;
+    }
+
+    function applyPlayerShotHit(dirX, dirY) {
+      let bestIndex = -1;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < state.enemies.length; i += 1) {
+        const enemy = state.enemies[i];
+        const t = rayHitsEnemy(enemy, player.x, player.y, dirX, dirY);
+        if (t == null) continue;
+        if (t >= bestDist) continue;
+        bestDist = t;
+        bestIndex = i;
+      }
+
+      if (bestIndex < 0) return;
+
+      const enemy = state.enemies[bestIndex];
+      enemy.hp -= gun.damage;
+      addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), gun.damage);
+      if (enemy.hp <= 0) {
+        setLocalKeys(state.keys + 1);
+        if (state.network.connected) {
+          sendNet({ type: "addKey", amount: 1 });
+        }
+        state.enemies[bestIndex] = createEnemy();
+      }
+      updateHud();
+    }
+
     function tryShoot(nowMs) {
       if (!state.mouse.down) return;
       if (nowMs - gun.lastShotTime < gun.cooldownMs) return;
@@ -850,6 +892,7 @@
       netDx /= netLen;
       netDy /= netLen;
 
+      applyPlayerShotHit(pxDx, pxDy);
       spawnPlayerBullet(pxDx, pxDy);
       shootRemotePlayers(netDx, netDy);
     }
@@ -1029,6 +1072,9 @@
     }
 
     function onKey(event, down) {
+      if (isTypingElement(event.target)) {
+        return;
+      }
       const key = event.key.toLowerCase();
       if (key === "w" || key === "a" || key === "s" || key === "d") {
         state.pressed[key] = down;
@@ -1038,6 +1084,7 @@
 
     window.addEventListener("keydown", (event) => onKey(event, true));
     window.addEventListener("keyup", (event) => onKey(event, false));
+    window.addEventListener("blur", resetMovementKeys);
 
     canvas.addEventListener("mousemove", (event) => {
       const rect = canvas.getBoundingClientRect();
