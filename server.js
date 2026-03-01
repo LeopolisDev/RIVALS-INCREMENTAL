@@ -81,6 +81,28 @@ function createId(prefix) {
   return prefix + Math.random().toString(36).slice(2, 10);
 }
 
+function sanitizeName(raw) {
+  if (typeof raw !== "string") return "";
+  return raw.trim().replace(/\s+/g, " ").slice(0, 18);
+}
+
+function isNameTaken(name, requesterId) {
+  const normalized = name.toLowerCase();
+  for (const [id, player] of lobbyPlayers.entries()) {
+    if (id === requesterId) continue;
+    if ((player.name || "").toLowerCase() === normalized) return true;
+  }
+
+  for (const room of duelRooms.values()) {
+    for (const player of room.players.values()) {
+      if (player.id === requesterId) continue;
+      if ((player.name || "").toLowerCase() === normalized) return true;
+    }
+  }
+
+  return false;
+}
+
 function buildDuelUrl(roomId, token) {
   const query = "room=" + encodeURIComponent(roomId) + "&token=" + encodeURIComponent(token);
   if (DUEL_SITE_URL) {
@@ -265,6 +287,7 @@ function handleDuelJoin(socket, message) {
 
   socket.mode = "duel";
   socket.roomId = roomId;
+  const lobbyMe = lobbyPlayers.get(socket.playerId);
   removeFromQueue(socket.playerId);
   lobbyPlayers.delete(socket.playerId);
 
@@ -278,7 +301,7 @@ function handleDuelJoin(socket, message) {
     aimY: 0.5,
     firing: false,
     hp: PLAYER_MAX_HP,
-    keys: 0,
+    keys: lobbyMe ? Math.max(0, Math.floor(lobbyMe.keys || 0)) : 0,
     lastShotAt: 0
   };
 
@@ -317,6 +340,7 @@ function cleanupFromDuel(socket, reason) {
     if (otherSocket) {
       otherSocket.mode = "lobby";
       otherSocket.roomId = null;
+      otherSocket.hasChosenName = true;
       const spawn = randomSpawn();
       lobbyPlayers.set(otherId, {
         id: otherId,
@@ -344,6 +368,7 @@ wss.on("connection", (socket) => {
   socket.playerId = id;
   socket.mode = "lobby";
   socket.roomId = null;
+  socket.hasChosenName = false;
 
   sockets.set(id, socket);
   lobbyPlayers.set(id, {
@@ -386,21 +411,47 @@ wss.on("connection", (socket) => {
     }
 
     if (message.type === "join" && socket.mode === "lobby" && lobbyMe) {
-      if (typeof message.name === "string") {
-        const clean = message.name.trim().slice(0, 18);
-        if (clean.length > 0) {
-          lobbyMe.name = clean;
-        }
+      const clean = sanitizeName(message.name);
+      if (clean.length < 2) {
+        sendTo(socket, { type: "nameRejected", reason: "Name must be at least 2 characters" });
+        return;
       }
+      if (isNameTaken(clean, id)) {
+        sendTo(socket, { type: "nameRejected", reason: "That name is already in use" });
+        return;
+      }
+      lobbyMe.name = clean;
+      socket.hasChosenName = true;
+      sendTo(socket, { type: "nameAccepted", name: clean });
+      sendLobbyPlayers();
       return;
     }
 
     if (message.type === "joinQueue" && socket.mode === "lobby") {
+      if (!socket.hasChosenName) {
+        sendTo(socket, { type: "nameRequired", reason: "Choose a unique name first" });
+        return;
+      }
       if (!matchQueue.includes(id)) {
         matchQueue.push(id);
         sendTo(socket, { type: "queueJoined" });
       }
       runMatchmaker();
+      return;
+    }
+
+    if (message.type === "syncProfile" && socket.mode === "lobby" && lobbyMe) {
+      if (Number.isFinite(message.keys)) {
+        lobbyMe.keys = clamp(Math.round(message.keys), 0, 1000000);
+      }
+      if (Number.isFinite(message.hp)) {
+        lobbyMe.hp = clamp(Math.round(message.hp), 0, PLAYER_MAX_HP);
+      }
+      sendTo(socket, {
+        type: "profileSynced",
+        keys: lobbyMe.keys,
+        hp: lobbyMe.hp
+      });
       return;
     }
 
