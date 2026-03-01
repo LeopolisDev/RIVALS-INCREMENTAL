@@ -484,10 +484,7 @@
       nameModal.classList.toggle("visible", Boolean(visible));
       if (visible) {
         resetMovementKeys();
-        setTimeout(() => {
-          nameInput.focus();
-          nameInput.select();
-        }, 0);
+        nameInput.blur();
         return;
       }
 
