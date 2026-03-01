@@ -1042,10 +1042,13 @@
       }
     });
 
-    function submitNameSelection(rawName) {
+    function submitNameSelection(rawName, options = {}) {
+      const silent = Boolean(options.silent);
       if (!state.network.connected) {
         setNameMessage("Name: connect to server first");
-        setNameModalVisible(true);
+        if (!silent) {
+          setNameModalVisible(true);
+        }
         return;
       }
 
@@ -1054,7 +1057,9 @@
         state.network.nameAccepted = false;
         state.network.namePending = false;
         setNameMessage("Name: use 2-18 characters");
-        setNameModalVisible(true);
+        if (!silent) {
+          setNameModalVisible(true);
+        }
         updateQueueUi();
         return;
       }
@@ -1062,7 +1067,9 @@
       nameInput.value = clean;
       state.network.namePending = true;
       setNameMessage("Name: checking availability...");
-      setNameModalVisible(true);
+      if (!silent) {
+        setNameModalVisible(true);
+      }
       updateQueueUi();
       sendNet({ type: "join", name: clean });
     }
@@ -1224,8 +1231,8 @@
         const name = sanitizeDisplayName(stored || "");
         if (name) {
           nameInput.value = name;
-          setNameModalVisible(true);
-          submitNameSelection(name);
+          setNameModalVisible(false);
+          submitNameSelection(name, { silent: true });
         } else {
           setNameMessage("Name: choose a unique name");
           setNameModalVisible(true);
