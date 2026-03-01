@@ -1,0 +1,699 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RIVALS 1v1 Duel</title>
+  <style>
+    :root {
+      --bg1: #0f2231;
+      --bg2: #183449;
+      --panel: rgba(10, 16, 24, 0.85);
+      --text: #e8f4ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 15% 15%, rgba(89, 164, 220, 0.25), transparent 40%),
+        radial-gradient(circle at 85% 85%, rgba(218, 153, 73, 0.18), transparent 45%),
+        linear-gradient(170deg, var(--bg1), var(--bg2));
+      color: var(--text);
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 14px;
+    }
+
+    #shell {
+      width: min(94vw, 920px);
+      height: min(94vh, 920px);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 12px;
+    }
+
+    #topHud {
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      user-select: none;
+    }
+
+    #leftHud {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    #title {
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    #stats {
+      display: flex;
+      gap: 14px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    #statusText {
+      font-size: 12px;
+      color: #8bd8ff;
+    }
+
+    #arenaWrap {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-height: 360px;
+      border-radius: 18px;
+      border: 3px solid rgba(237, 219, 123, 0.8);
+      overflow: hidden;
+      box-shadow: 0 14px 38px rgba(0, 0, 0, 0.32);
+      background: #7cae62;
+    }
+
+    #gameCanvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: crosshair;
+    }
+
+    #bottomBar {
+      background: var(--panel);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      user-select: none;
+    }
+
+    #infoText {
+      font-size: 13px;
+    }
+
+    #leaveBtn {
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font-size: 12px;
+      padding: 7px 10px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="shell">
+    <div id="topHud">
+      <div id="leftHud">
+        <div id="title">RIVALS 1v1 DUEL</div>
+        <div id="stats">
+          <span id="keysText">Keys: 0</span>
+          <span id="myHpText">Your HP: 100</span>
+          <span id="oppHpText">Opponent HP: --</span>
+        </div>
+      </div>
+      <div id="statusText">Connecting...</div>
+    </div>
+
+    <div id="arenaWrap">
+      <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <div id="bottomBar">
+      <div id="infoText">Move: WASD | Shoot: Left Mouse | Gun: Assault Rifle (10 dmg, 0.1s)</div>
+      <button id="leaveBtn" type="button">Back To Lobby</button>
+    </div>
+  </div>
+
+  <script>
+    window.RIVALS_WS_URL = window.RIVALS_WS_URL || "";
+
+    const params = new URLSearchParams(window.location.search);
+    const roomId = params.get("room") || "";
+    const token = params.get("token") || "";
+
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    const arenaWrap = document.getElementById("arenaWrap");
+    const statusText = document.getElementById("statusText");
+    const keysText = document.getElementById("keysText");
+    const myHpText = document.getElementById("myHpText");
+    const oppHpText = document.getElementById("oppHpText");
+    const leaveBtn = document.getElementById("leaveBtn");
+
+    const world = { width: 0, height: 0 };
+    const player = { x: 0, y: 0, radius: 16, speed: 280 };
+    const gun = { damage: 10, cooldownMs: 100, bulletSpeed: 720, bulletLife: 1.2, lastShotTime: -Infinity };
+
+    const state = {
+      socket: null,
+      connected: false,
+      myId: null,
+      keys: 0,
+      hp: 100,
+      pressed: { w: false, a: false, s: false, d: false },
+      mouse: { x: 0, y: 0, down: false },
+      remotePlayers: new Map(),
+      popups: [],
+      localBullets: [],
+      remoteBullets: [],
+      sendTimer: 0,
+      bannerText: "",
+      bannerTimer: 0,
+      initialized: false
+    };
+
+    function randomRange(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function pxToNx(x) {
+      return clamp(x / world.width, 0, 1);
+    }
+
+    function pxToNy(y) {
+      return clamp(y / world.height, 0, 1);
+    }
+
+    function nxToPx(x) {
+      return x * world.width;
+    }
+
+    function nyToPy(y) {
+      return y * world.height;
+    }
+
+    function resize() {
+      world.width = Math.max(320, Math.floor(arenaWrap.clientWidth));
+      world.height = Math.max(320, Math.floor(arenaWrap.clientHeight));
+      canvas.width = world.width;
+      canvas.height = world.height;
+
+      if (!state.initialized) {
+        player.x = world.width * 0.5;
+        player.y = world.height * 0.5;
+        state.mouse.x = player.x;
+        state.mouse.y = player.y;
+        state.initialized = true;
+      } else {
+        player.x = clamp(player.x, player.radius, world.width - player.radius);
+        player.y = clamp(player.y, player.radius, world.height - player.radius);
+      }
+    }
+
+    function updateHud() {
+      keysText.textContent = "Keys: " + state.keys;
+      myHpText.textContent = "Your HP: " + Math.ceil(state.hp);
+
+      let opponent = null;
+      for (const p of state.remotePlayers.values()) {
+        if (p.id !== state.myId) {
+          opponent = p;
+          break;
+        }
+      }
+      oppHpText.textContent = "Opponent HP: " + (opponent ? Math.ceil(opponent.hp) : "--");
+    }
+
+    function addPopup(x, y, amount, color) {
+      state.popups.push({
+        x,
+        y,
+        text: "-" + amount + "HP",
+        life: 0.3,
+        maxLife: 0.3,
+        color: color || "rgba(255, 36, 36, 1)"
+      });
+    }
+
+    function spawnLocalBullet(dirX, dirY) {
+      const startOffset = player.radius + 4;
+      state.localBullets.push({
+        x: player.x + dirX * startOffset,
+        y: player.y + dirY * startOffset,
+        vx: dirX * gun.bulletSpeed,
+        vy: dirY * gun.bulletSpeed,
+        life: gun.bulletLife
+      });
+    }
+
+    function spawnRemoteBullet(ox, oy, dx, dy) {
+      const sx = nxToPx(ox);
+      const sy = nyToPy(oy);
+      let vx = dx * world.width;
+      let vy = dy * world.height;
+      const len = Math.hypot(vx, vy);
+      if (!len) return;
+      vx /= len;
+      vy /= len;
+
+      state.remoteBullets.push({
+        x: sx,
+        y: sy,
+        vx: vx * gun.bulletSpeed,
+        vy: vy * gun.bulletSpeed,
+        life: gun.bulletLife
+      });
+    }
+
+    function updatePlayer(dt) {
+      let moveX = 0;
+      let moveY = 0;
+      if (state.pressed.w) moveY -= 1;
+      if (state.pressed.s) moveY += 1;
+      if (state.pressed.a) moveX -= 1;
+      if (state.pressed.d) moveX += 1;
+      if (moveX || moveY) {
+        const len = Math.hypot(moveX, moveY);
+        moveX /= len;
+        moveY /= len;
+      }
+      player.x = clamp(player.x + moveX * player.speed * dt, player.radius, world.width - player.radius);
+      player.y = clamp(player.y + moveY * player.speed * dt, player.radius, world.height - player.radius);
+    }
+
+    function updateLocalBullets(dt) {
+      const next = [];
+      for (const bullet of state.localBullets) {
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
+        bullet.life -= dt;
+        if (bullet.life <= 0) continue;
+        if (bullet.x < 0 || bullet.x > world.width || bullet.y < 0 || bullet.y > world.height) continue;
+
+        let collided = false;
+        for (const netPlayer of state.remotePlayers.values()) {
+          if (netPlayer.id === state.myId) continue;
+          const tx = nxToPx(netPlayer.x);
+          const ty = nyToPy(netPlayer.y);
+          const dx = bullet.x - tx;
+          const dy = bullet.y - ty;
+          if (dx * dx + dy * dy <= player.radius * player.radius) {
+            collided = true;
+            break;
+          }
+        }
+        if (!collided) next.push(bullet);
+      }
+      state.localBullets = next;
+    }
+
+    function updateRemoteBullets(dt) {
+      const next = [];
+      for (const bullet of state.remoteBullets) {
+        bullet.x += bullet.vx * dt;
+        bullet.y += bullet.vy * dt;
+        bullet.life -= dt;
+        if (bullet.life <= 0) continue;
+        if (bullet.x < 0 || bullet.x > world.width || bullet.y < 0 || bullet.y > world.height) continue;
+        next.push(bullet);
+      }
+      state.remoteBullets = next;
+    }
+
+    function updatePopups(dt) {
+      for (const popup of state.popups) popup.life -= dt;
+      state.popups = state.popups.filter((p) => p.life > 0);
+    }
+
+    function updateBanner(dt) {
+      if (state.bannerTimer > 0) {
+        state.bannerTimer -= dt;
+        if (state.bannerTimer <= 0) state.bannerText = "";
+      }
+    }
+
+    function tryShoot(nowMs) {
+      if (!state.connected || !state.myId || !state.mouse.down) return;
+      if (nowMs - gun.lastShotTime < gun.cooldownMs) return;
+      gun.lastShotTime = nowMs;
+
+      let pxDx = state.mouse.x - player.x;
+      let pxDy = state.mouse.y - player.y;
+      const pxLen = Math.hypot(pxDx, pxDy);
+      if (!pxLen) return;
+      pxDx /= pxLen;
+      pxDy /= pxLen;
+
+      let netDx = pxToNx(state.mouse.x) - pxToNx(player.x);
+      let netDy = pxToNy(state.mouse.y) - pxToNy(player.y);
+      const netLen = Math.hypot(netDx, netDy);
+      if (!netLen) return;
+      netDx /= netLen;
+      netDy /= netLen;
+
+      spawnLocalBullet(pxDx, pxDy);
+      sendNet({
+        type: "duelShoot",
+        ox: pxToNx(player.x),
+        oy: pxToNy(player.y),
+        dx: netDx,
+        dy: netDy,
+        damage: gun.damage
+      });
+    }
+
+    function draw() {
+      ctx.clearRect(0, 0, world.width, world.height);
+
+      const gradient = ctx.createRadialGradient(
+        world.width * 0.5,
+        world.height * 0.5,
+        40,
+        world.width * 0.5,
+        world.height * 0.5,
+        Math.max(world.width, world.height) * 0.75
+      );
+      gradient.addColorStop(0, "rgba(137, 189, 95, 0.12)");
+      gradient.addColorStop(1, "rgba(78, 118, 58, 0.42)");
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, world.width, world.height);
+
+      drawLaser();
+      drawRemotePlayers();
+      drawBullets(state.localBullets, "#f7f0d0");
+      drawBullets(state.remoteBullets, "#ffd88e");
+      drawPlayer();
+      drawPopups();
+      drawBanner();
+    }
+
+    function drawLaser() {
+      let dx = pxToNx(state.mouse.x) - pxToNx(player.x);
+      let dy = pxToNy(state.mouse.y) - pxToNy(player.y);
+      const len = Math.hypot(dx, dy);
+      if (!len) return;
+      dx /= len;
+      dy /= len;
+
+      const far = 1.8;
+      const lx = nxToPx(pxToNx(player.x) + dx * far);
+      const ly = nyToPy(pxToNy(player.y) + dy * far);
+
+      ctx.beginPath();
+      ctx.moveTo(player.x, player.y);
+      ctx.lineTo(lx, ly);
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255, 70, 70, 0.95)";
+      ctx.stroke();
+    }
+
+    function drawPlayer() {
+      ctx.beginPath();
+      ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+      ctx.fillStyle = "#68c8ff";
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "rgba(255,255,255,0.75)";
+      ctx.stroke();
+
+      const hpW = 64;
+      const hpR = clamp(state.hp / 100, 0, 1);
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(player.x - hpW / 2, player.y - player.radius - 14, hpW, 6);
+      ctx.fillStyle = "#57e07f";
+      ctx.fillRect(player.x - hpW / 2, player.y - player.radius - 14, hpW * hpR, 6);
+    }
+
+    function drawRemotePlayers() {
+      for (const p of state.remotePlayers.values()) {
+        if (p.id === state.myId) continue;
+        const px = nxToPx(p.x);
+        const py = nyToPy(p.y);
+        ctx.beginPath();
+        ctx.arc(px, py, player.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "#ffd26a";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(60, 40, 0, 0.8)";
+        ctx.stroke();
+
+        const hpW = 58;
+        const hpR = clamp(p.hp / 100, 0, 1);
+        ctx.fillStyle = "rgba(0,0,0,0.45)";
+        ctx.fillRect(px - hpW / 2, py - player.radius - 14, hpW, 6);
+        ctx.fillStyle = "#57e07f";
+        ctx.fillRect(px - hpW / 2, py - player.radius - 14, hpW * hpR, 6);
+
+        ctx.textAlign = "center";
+        ctx.textBaseline = "bottom";
+        ctx.font = "bold 11px Segoe UI";
+        ctx.fillStyle = "#fff0b6";
+        ctx.fillText(p.name, px, py - player.radius - 16);
+      }
+    }
+
+    function drawBullets(bullets, color) {
+      for (const bullet of bullets) {
+        ctx.beginPath();
+        ctx.arc(bullet.x, bullet.y, 3, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+      }
+    }
+
+    function drawPopups() {
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "bold 16px Segoe UI";
+
+      for (const popup of state.popups) {
+        const alpha = clamp(popup.life / popup.maxLife, 0, 1);
+        const scale = 1 + (1 - alpha) * 0.08;
+        ctx.save();
+        ctx.translate(popup.x, popup.y);
+        ctx.scale(scale, scale);
+        const rgba = popup.color.replace(", 1)", ", " + alpha + ")");
+        ctx.fillStyle = rgba;
+        ctx.strokeStyle = "rgba(40, 0, 0, " + alpha + ")";
+        ctx.lineWidth = 3;
+        ctx.strokeText(popup.text, 0, 0);
+        ctx.fillText(popup.text, 0, 0);
+        ctx.restore();
+      }
+    }
+
+    function drawBanner() {
+      if (!state.bannerText) return;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "bold 28px Segoe UI";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.45)";
+      ctx.lineWidth = 5;
+      ctx.strokeText(state.bannerText, world.width * 0.5, world.height * 0.18);
+      ctx.fillText(state.bannerText, world.width * 0.5, world.height * 0.18);
+    }
+
+    function sendNet(payload) {
+      if (!state.socket || state.socket.readyState !== WebSocket.OPEN) return;
+      state.socket.send(JSON.stringify(payload));
+    }
+
+    function connect() {
+      if (!roomId || !token) {
+        statusText.textContent = "Missing room info. Returning to lobby...";
+        setTimeout(() => {
+          window.location.href = "/";
+        }, 1200);
+        return;
+      }
+
+      const customWs = (window.RIVALS_WS_URL || "").trim();
+      const proto = window.location.protocol === "https:" ? "wss" : "ws";
+      const fallbackUrl = proto + "://" + window.location.host;
+      const socket = new WebSocket(customWs || fallbackUrl);
+      state.socket = socket;
+
+      socket.addEventListener("open", () => {
+        state.connected = true;
+        statusText.textContent = "Connected. Joining match...";
+        sendNet({ type: "duelJoin", room: roomId, token });
+      });
+
+      socket.addEventListener("close", () => {
+        state.connected = false;
+        statusText.textContent = "Disconnected";
+      });
+
+      socket.addEventListener("message", (event) => {
+        let message;
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        if (message.type === "duelWelcome") {
+          state.myId = message.id;
+          statusText.textContent = "1v1 Match Active";
+          return;
+        }
+
+        if (message.type === "duelPlayers" && Array.isArray(message.players)) {
+          const map = new Map();
+          for (const p of message.players) {
+            map.set(p.id, p);
+            if (p.id === state.myId) {
+              player.x = nxToPx(p.x);
+              player.y = nyToPy(p.y);
+              state.hp = p.hp;
+              state.keys = p.keys;
+            }
+          }
+          state.remotePlayers = map;
+          updateHud();
+          return;
+        }
+
+        if (message.type === "duelDamagePopup") {
+          const target = state.remotePlayers.get(message.targetId);
+          if (target) {
+            addPopup(nxToPx(target.x) + randomRange(-6, 6), nyToPy(target.y) + randomRange(-6, 6), message.amount);
+          } else if (message.targetId === state.myId) {
+            addPopup(player.x + randomRange(-6, 6), player.y + randomRange(-6, 6), message.amount);
+          }
+          return;
+        }
+
+        if (message.type === "duelShotFired") {
+          if (message.shooterId === state.myId) return;
+          if (
+            Number.isFinite(message.ox) &&
+            Number.isFinite(message.oy) &&
+            Number.isFinite(message.dx) &&
+            Number.isFinite(message.dy)
+          ) {
+            spawnRemoteBullet(message.ox, message.oy, message.dx, message.dy);
+          }
+          return;
+        }
+
+        if (message.type === "duelKill") {
+          if (message.killerId === state.myId) {
+            state.bannerText = "Eliminated Opponent";
+          } else if (message.targetId === state.myId) {
+            state.bannerText = "You Were Eliminated";
+          } else {
+            state.bannerText = "Elimination";
+          }
+          state.bannerTimer = 1.2;
+          return;
+        }
+
+        if (message.type === "duelEnded") {
+          state.bannerText = "Opponent Left";
+          state.bannerTimer = 2.0;
+          statusText.textContent = "Match ended. Returning to lobby...";
+          setTimeout(() => {
+            window.location.href = "/";
+          }, 1300);
+          return;
+        }
+
+        if (message.type === "duelError") {
+          statusText.textContent = "Match error: " + (message.reason || "unknown");
+          setTimeout(() => {
+            window.location.href = "/";
+          }, 1400);
+        }
+      });
+    }
+
+    function sendState(dt) {
+      if (!state.connected || !state.myId) return;
+      state.sendTimer += dt;
+      if (state.sendTimer < 0.05) return;
+      state.sendTimer = 0;
+
+      sendNet({
+        type: "duelState",
+        x: pxToNx(player.x),
+        y: pxToNy(player.y),
+        aimX: pxToNx(state.mouse.x),
+        aimY: pxToNy(state.mouse.y),
+        firing: state.mouse.down
+      });
+    }
+
+    function onKey(event, down) {
+      const key = event.key.toLowerCase();
+      if (key === "w" || key === "a" || key === "s" || key === "d") {
+        state.pressed[key] = down;
+        event.preventDefault();
+      }
+    }
+
+    window.addEventListener("resize", resize);
+    window.addEventListener("keydown", (event) => onKey(event, true));
+    window.addEventListener("keyup", (event) => onKey(event, false));
+
+    canvas.addEventListener("mousemove", (event) => {
+      const rect = canvas.getBoundingClientRect();
+      state.mouse.x = event.clientX - rect.left;
+      state.mouse.y = event.clientY - rect.top;
+    });
+    canvas.addEventListener("mousedown", (event) => {
+      if (event.button === 0) state.mouse.down = true;
+    });
+    window.addEventListener("mouseup", (event) => {
+      if (event.button === 0) state.mouse.down = false;
+    });
+    canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    leaveBtn.addEventListener("click", () => {
+      window.location.href = "/";
+    });
+
+    resize();
+    updateHud();
+    connect();
+
+    let lastTime = performance.now();
+    function loop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.05);
+      lastTime = now;
+
+      updatePlayer(dt);
+      updateLocalBullets(dt);
+      updateRemoteBullets(dt);
+      updatePopups(dt);
+      updateBanner(dt);
+      tryShoot(now);
+      sendState(dt);
+      draw();
+
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

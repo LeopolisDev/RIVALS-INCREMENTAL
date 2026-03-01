@@ -157,6 +157,27 @@
       overflow: auto;
     }
 
+    #queueStatusText {
+      font-size: 12px;
+      color: #cbe9ff;
+      margin-bottom: 6px;
+    }
+
+    #queueBtn {
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: rgba(255, 255, 255, 0.08);
+      color: #e8f4ff;
+      border-radius: 8px;
+      font-size: 12px;
+      padding: 7px 8px;
+      cursor: pointer;
+    }
+
+    #queueBtn:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
     .slot {
       border: 1px solid rgba(255, 255, 255, 0.22);
       border-radius: 10px;
@@ -219,6 +240,8 @@
       <div id="onlinePanel">
         <div id="onlineTitle">Online Battle Lobby</div>
         <div id="connectionText">Status: offline</div>
+        <div id="queueStatusText">1v1 Queue: 0 waiting</div>
+        <button id="queueBtn" type="button">Join 1v1 Matchmaking</button>
         <ol id="playerList"></ol>
       </div>
     </div>
@@ -234,6 +257,8 @@
     const playerHpText = document.getElementById("playerHpText");
     const enemyHpText = document.getElementById("enemyHpText");
     const connectionText = document.getElementById("connectionText");
+    const queueStatusText = document.getElementById("queueStatusText");
+    const queueBtn = document.getElementById("queueBtn");
     const playerList = document.getElementById("playerList");
 
     const world = {
@@ -280,7 +305,9 @@
         socket: null,
         remotePlayers: new Map(),
         sendTimer: 0,
-        needsRespawnSync: false
+        needsRespawnSync: false,
+        queueSize: 0,
+        inQueue: false
       }
     };
 
@@ -843,10 +870,25 @@
 
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
+    queueBtn.addEventListener("click", () => {
+      if (!state.network.connected) return;
+      if (state.network.inQueue) {
+        sendNet({ type: "leaveQueue" });
+      } else {
+        sendNet({ type: "joinQueue" });
+      }
+    });
+
     function sendNet(payload) {
       const socket = state.network.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
       socket.send(JSON.stringify(payload));
+    }
+
+    function updateQueueUi() {
+      queueStatusText.textContent = "1v1 Queue: " + state.network.queueSize + " waiting";
+      queueBtn.textContent = state.network.inQueue ? "Leave 1v1 Matchmaking" : "Join 1v1 Matchmaking";
+      queueBtn.disabled = !state.network.connected;
     }
 
     function updateLobbyList() {
@@ -882,13 +924,17 @@
         state.network.myName = name;
         localStorage.setItem("rivals_name", name);
         sendNet({ type: "join", name });
+        updateQueueUi();
       });
 
       socket.addEventListener("close", () => {
         state.network.connected = false;
+        state.network.inQueue = false;
+        state.network.queueSize = 0;
         state.network.remotePlayers.clear();
         connectionText.textContent = "Status: offline";
         updateLobbyList();
+        updateQueueUi();
       });
 
       socket.addEventListener("message", (event) => {
@@ -908,6 +954,34 @@
             state.keys = message.player.keys;
             updateHud();
           }
+          return;
+        }
+
+        if (message.type === "queueJoined") {
+          state.network.inQueue = true;
+          updateQueueUi();
+          return;
+        }
+
+        if (message.type === "queueLeft") {
+          state.network.inQueue = false;
+          updateQueueUi();
+          return;
+        }
+
+        if (message.type === "queueStatus" && Number.isFinite(message.queued)) {
+          state.network.queueSize = Math.max(0, Math.floor(message.queued));
+          updateQueueUi();
+          return;
+        }
+
+        if (message.type === "matchFound" && typeof message.url === "string") {
+          state.network.inQueue = false;
+          updateQueueUi();
+          connectionText.textContent = "Status: match found, redirecting...";
+          setTimeout(() => {
+            window.location.href = message.url;
+          }, 450);
           return;
         }
 
@@ -983,6 +1057,7 @@
     resize();
     spawnEnemy();
     updateHud();
+    updateQueueUi();
     connectMultiplayer();
 
     let lastTime = performance.now();
