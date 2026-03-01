@@ -6,6 +6,15 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("v")) return;
+      params.set("v", Date.now().toString());
+      const next = window.location.pathname + "?" + params.toString() + window.location.hash;
+      window.location.replace(next);
+    })();
+  </script>
   <title>RIVALS INCREMENTAL</title>
   <style>
     :root {
