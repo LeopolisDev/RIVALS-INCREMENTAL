@@ -191,7 +191,7 @@
       color: rgba(232, 244, 255, 0.9);
     }
 
-    @media (max-width: 760px), (max-height: 760px) {
+    @media (max-width: 760px) {
       #gameShell {
         grid-template-rows: auto 1fr 110px;
       }
@@ -310,7 +310,8 @@
         sendTimer: 0,
         needsRespawnSync: false,
         queueSize: 0,
-        inQueue: false
+        inQueue: false,
+        matchWindow: null
       }
     };
 
@@ -877,10 +878,82 @@
       if (!state.network.connected) return;
       if (state.network.inQueue) {
         sendNet({ type: "leaveQueue" });
+        releaseMatchWindow();
       } else {
+        prepareMatchWindow();
         sendNet({ type: "joinQueue" });
       }
     });
+
+    function prepareMatchWindow() {
+      const existing = state.network.matchWindow;
+      if (existing && !existing.closed) return;
+
+      let popup = null;
+      try {
+        popup = window.open("", "_blank");
+      } catch {
+        popup = null;
+      }
+      if (!popup) return;
+
+      state.network.matchWindow = popup;
+      try {
+        popup.document.title = "RIVALS Matchmaking";
+        popup.document.body.style.margin = "0";
+        popup.document.body.style.background = "#0f2436";
+        popup.document.body.style.color = "#e8f4ff";
+        popup.document.body.style.fontFamily = "Segoe UI, Tahoma, sans-serif";
+        popup.document.body.style.display = "grid";
+        popup.document.body.style.placeItems = "center";
+        popup.document.body.innerHTML =
+          "<div style='text-align:center'><h2>Finding 1v1 match...</h2><p>This tab will open your duel when found.</p></div>";
+      } catch {
+        // Ignore rendering failures; this window is just a placeholder for the duel redirect.
+      }
+    }
+
+    function releaseMatchWindow() {
+      const popup = state.network.matchWindow;
+      state.network.matchWindow = null;
+      if (!popup || popup.closed) return;
+      try {
+        if (popup.location.href === "about:blank") {
+          popup.close();
+        }
+      } catch {
+        // Ignore if browser blocks location checks.
+      }
+    }
+
+    function openMatchInNewTab(url) {
+      let popup = state.network.matchWindow;
+
+      if (popup && !popup.closed) {
+        try {
+          popup.location.replace(url);
+          popup.focus();
+          return true;
+        } catch {
+          // Fall through to try opening a new tab.
+        }
+      }
+
+      try {
+        popup = window.open(url, "_blank");
+      } catch {
+        popup = null;
+      }
+      state.network.matchWindow = popup;
+      if (popup && !popup.closed) {
+        try {
+          popup.focus();
+        } catch {}
+        return true;
+      }
+
+      return false;
+    }
 
     function sendNet(payload) {
       const socket = state.network.socket;
@@ -969,6 +1042,7 @@
         state.network.queueSize = 0;
         state.network.remotePlayers.clear();
         connectionText.textContent = "Status: offline";
+        releaseMatchWindow();
         updateLobbyList();
         updateQueueUi();
       });
@@ -1005,6 +1079,7 @@
 
         if (message.type === "queueLeft") {
           state.network.inQueue = false;
+          releaseMatchWindow();
           updateQueueUi();
           return;
         }
@@ -1018,10 +1093,14 @@
         if (message.type === "matchFound" && typeof message.url === "string") {
           state.network.inQueue = false;
           updateQueueUi();
-          connectionText.textContent = "Status: match found, redirecting...";
+          connectionText.textContent = "Status: match found, opening duel tab...";
           setTimeout(() => {
-            window.location.href = message.url;
-          }, 450);
+            const opened = openMatchInNewTab(message.url);
+            if (!opened) {
+              connectionText.textContent = "Status: popup blocked, opening duel here...";
+              window.location.href = message.url;
+            }
+          }, 250);
           return;
         }
 
