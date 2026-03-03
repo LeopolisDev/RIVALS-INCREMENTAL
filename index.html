@@ -402,10 +402,12 @@
     const STORAGE_SNIPER_OWNED_KEY = "rivals_sniper_owned";
     const STORAGE_MINIGUN_OWNED_KEY = "rivals_minigun_owned";
     const PLAYER_MAX_HP = 150;
-    const ENEMY_COUNT = 30;
+    const ENEMY_COUNT = 3;
     const ENEMY_MAX_HP = 150;
     const SNIPER_COST = 25;
     const MINIGUN_COST = 100;
+    const MINIGUN_AMMO_START = 300;
+    const MINIGUN_RIFLE_KILLS_TO_REARM = 10;
     const SNIPER_MAG_SIZE = 5;
     const SNIPER_RESERVE_START = 10;
     const SNIPER_RELOAD_MS = 3000;
@@ -583,6 +585,11 @@
         lockedByDepletedAmmo: false,
         arKillsNeeded: 0
       },
+      minigun: {
+        ammo: MINIGUN_AMMO_START,
+        lockedByDepletedAmmo: false,
+        arKillsNeeded: 0
+      },
       playerHp: PLAYER_MAX_HP,
       activeWeaponId: "rifle",
       lastShotTime: -Infinity,
@@ -637,8 +644,13 @@
       return state.sniper.lockedByDepletedAmmo && state.sniper.arKillsNeeded > 0;
     }
 
+    function isMinigunTemporarilyLocked() {
+      return state.minigun.lockedByDepletedAmmo && state.minigun.arKillsNeeded > 0;
+    }
+
     function canEquipWeapon(weaponId) {
       if (weaponId === "sniper" && isSniperTemporarilyLocked()) return false;
+      if (weaponId === "minigun" && isMinigunTemporarilyLocked()) return false;
       return hasWeaponUnlocked(weaponId);
     }
 
@@ -748,6 +760,49 @@
       updateSniperUi();
     }
 
+    function refillMinigunAmmo() {
+      state.minigun.ammo = MINIGUN_AMMO_START;
+      state.minigun.lockedByDepletedAmmo = false;
+      state.minigun.arKillsNeeded = 0;
+    }
+
+    function lockMinigunUntilRifleKills() {
+      if (isMinigunTemporarilyLocked()) return;
+      state.minigun.ammo = 0;
+      state.minigun.lockedByDepletedAmmo = true;
+      state.minigun.arKillsNeeded = MINIGUN_RIFLE_KILLS_TO_REARM;
+      setActiveWeapon("rifle");
+      updateWeaponHud();
+      updateMinigunUi();
+    }
+
+    function consumeMinigunRound() {
+      if (isMinigunTemporarilyLocked()) return false;
+      if (state.minigun.ammo <= 0) {
+        lockMinigunUntilRifleKills();
+        return false;
+      }
+
+      state.minigun.ammo -= 1;
+      if (state.minigun.ammo <= 0) {
+        lockMinigunUntilRifleKills();
+      } else {
+        updateWeaponHud();
+        updateMinigunUi();
+      }
+      return true;
+    }
+
+    function registerRifleKillForMinigunUnlock() {
+      if (!isMinigunTemporarilyLocked()) return;
+      state.minigun.arKillsNeeded = Math.max(0, state.minigun.arKillsNeeded - 1);
+      if (state.minigun.arKillsNeeded === 0) {
+        refillMinigunAmmo();
+      }
+      updateWeaponHud();
+      updateMinigunUi();
+    }
+
     function syncProfileToServer() {
       if (!state.network.connected) return;
       sendNet({
@@ -788,7 +843,13 @@
       if (unlocked) {
         buyMinigunBtn.textContent = "Minigun Purchased";
         buyMinigunBtn.disabled = true;
-        minigunStatus.textContent = "Damage 8 body / 12 head | 0.05s auto";
+        const ammoText = "Minigun Ammo: " + state.minigun.ammo + "/" + MINIGUN_AMMO_START;
+        if (isMinigunTemporarilyLocked()) {
+          minigunStatus.textContent =
+            ammoText + " | Get " + state.minigun.arKillsNeeded + " AR kills to rearm";
+        } else {
+          minigunStatus.textContent = ammoText;
+        }
         updateEquipButtons();
         return;
       }
@@ -820,9 +881,13 @@
       }
 
       const minigunOwned = hasWeaponUnlocked("minigun");
+      const minigunSelectable = canEquipWeapon("minigun");
       if (!minigunOwned) {
         equipMinigunBtn.disabled = true;
         equipMinigunBtn.textContent = "Equip Minigun (Locked)";
+      } else if (!minigunSelectable) {
+        equipMinigunBtn.disabled = true;
+        equipMinigunBtn.textContent = "Equip Minigun (" + state.minigun.arKillsNeeded + " AR kills left)";
       } else {
         equipMinigunBtn.disabled = activeId === "minigun";
         equipMinigunBtn.textContent = activeId === "minigun" ? "Minigun Equipped" : "Equip Minigun";
@@ -846,6 +911,7 @@
       if (state.keys < MINIGUN_COST) return;
       setLocalKeys(state.keys - MINIGUN_COST);
       setLocalUnlockedWeapons([...state.unlockedWeapons, "minigun"]);
+      refillMinigunAmmo();
       setActiveWeapon("minigun");
       updateHud();
       updateMinigunUi();
@@ -929,8 +995,15 @@
         if (state.sniper.reloading) {
           suffix += " (reloading)";
         }
+      } else if (weapon.id === "minigun") {
+        suffix = " | Ammo: " + state.minigun.ammo + "/" + MINIGUN_AMMO_START;
       } else if (isSniperTemporarilyLocked()) {
         suffix = " | Sniper unlock: " + state.sniper.arKillsNeeded + " AR kills";
+        if (isMinigunTemporarilyLocked()) {
+          suffix += " | Minigun unlock: " + state.minigun.arKillsNeeded + " AR kills";
+        }
+      } else if (isMinigunTemporarilyLocked()) {
+        suffix = " | Minigun unlock: " + state.minigun.arKillsNeeded + " AR kills";
       }
       weaponText.textContent =
         "Gun: " +
@@ -1387,6 +1460,7 @@
       if (enemy.hp <= 0) {
         if (weapon.id === "rifle") {
           registerRifleKillForSniperUnlock();
+          registerRifleKillForMinigunUnlock();
         }
         setLocalKeys(state.keys + 1);
         if (state.network.connected) {
@@ -1412,6 +1486,12 @@
         }
         if (state.sniper.reloading) return;
       }
+      if (weapon.id === "minigun") {
+        if (isMinigunTemporarilyLocked()) {
+          setActiveWeapon("rifle");
+          return;
+        }
+      }
       if (nowMs - state.lastShotTime < weapon.cooldownMs) return;
 
       let pxDx = state.mouse.x - player.x;
@@ -1429,6 +1509,9 @@
       netDy /= netLen;
 
       if (weapon.id === "sniper" && !consumeSniperRound(nowMs)) {
+        return;
+      }
+      if (weapon.id === "minigun" && !consumeMinigunRound()) {
         return;
       }
 
@@ -2114,6 +2197,7 @@
         if (message.type === "kill") {
           if (message.killerId === state.network.myId && message.weaponId === "rifle") {
             registerRifleKillForSniperUnlock();
+            registerRifleKillForMinigunUnlock();
           }
           if (message.targetId === state.network.myId) {
             state.network.needsRespawnSync = true;
