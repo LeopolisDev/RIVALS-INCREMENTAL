@@ -301,6 +301,10 @@
       background: rgba(255, 255, 255, 0.15);
     }
 
+    .shopBtn + .shopBtn {
+      margin-top: 6px;
+    }
+
     #sniperStatus {
       margin-top: 6px;
       font-size: 12px;
@@ -355,6 +359,8 @@
         <div id="upgradeSlots">
           <div class="slot">
             <button id="buySniperBtn" class="shopBtn" type="button">Buy Sniper (25 Keys)</button>
+            <button id="equipRifleBtn" class="shopBtn" type="button">Equip Assault Rifle</button>
+            <button id="equipSniperBtn" class="shopBtn" type="button">Equip Sniper</button>
             <div id="sniperStatus">Locked</div>
           </div>
           <div class="slot">Damage Boost - Soon</div>
@@ -481,6 +487,8 @@
     const playerList = document.getElementById("playerList");
     const weaponText = document.getElementById("weaponText");
     const buySniperBtn = document.getElementById("buySniperBtn");
+    const equipRifleBtn = document.getElementById("equipRifleBtn");
+    const equipSniperBtn = document.getElementById("equipSniperBtn");
     const sniperStatus = document.getElementById("sniperStatus");
 
     const world = {
@@ -730,6 +738,7 @@
         } else {
           sniperStatus.textContent = "Unlocked (press 2, use wheel, press R to reload)";
         }
+        updateEquipButtons();
         return;
       }
 
@@ -737,6 +746,30 @@
       const canAfford = state.keys >= SNIPER_COST;
       buySniperBtn.disabled = !canAfford;
       sniperStatus.textContent = canAfford ? "Ready to buy" : "Need " + SNIPER_COST + " keys";
+      updateEquipButtons();
+    }
+
+    function updateEquipButtons() {
+      const activeId = getActiveWeapon().id;
+
+      equipRifleBtn.disabled = activeId === "rifle";
+      equipRifleBtn.textContent = activeId === "rifle" ? "Assault Rifle Equipped" : "Equip Assault Rifle";
+
+      const sniperOwned = hasWeaponUnlocked("sniper");
+      const sniperSelectable = canEquipWeapon("sniper");
+      if (!sniperOwned) {
+        equipSniperBtn.disabled = true;
+        equipSniperBtn.textContent = "Equip Sniper (Locked)";
+        return;
+      }
+      if (!sniperSelectable) {
+        equipSniperBtn.disabled = true;
+        equipSniperBtn.textContent = "Equip Sniper (" + state.sniper.arKillsNeeded + " AR kills left)";
+        return;
+      }
+
+      equipSniperBtn.disabled = activeId === "sniper";
+      equipSniperBtn.textContent = activeId === "sniper" ? "Sniper Equipped" : "Equip Sniper";
     }
 
     function tryPurchaseSniper() {
@@ -842,6 +875,7 @@
         (weapon.cooldownMs / 1000).toFixed(1) +
         "s)" +
         suffix;
+      updateEquipButtons();
     }
 
     function setActiveWeapon(weaponId) {
@@ -2030,6 +2064,12 @@
     setActiveWeapon(state.activeWeaponId);
     buySniperBtn.addEventListener("click", () => {
       tryPurchaseSniper();
+    });
+    equipRifleBtn.addEventListener("click", () => {
+      setActiveWeapon("rifle");
+    });
+    equipSniperBtn.addEventListener("click", () => {
+      setActiveWeapon("sniper");
     });
     nameBtn.addEventListener("click", () => submitNameSelection());
     changeNameBtn.addEventListener("click", () => {
