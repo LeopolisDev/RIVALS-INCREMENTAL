@@ -305,7 +305,8 @@
       margin-top: 6px;
     }
 
-    #sniperStatus {
+    #sniperStatus,
+    #minigunStatus {
       margin-top: 6px;
       font-size: 12px;
       color: #cbe9ff;
@@ -345,7 +346,7 @@
       </div>
       <div id="rightHud">
         <div id="weaponText">Gun: Assault Rifle (10 body / 15 head, 0.1s)</div>
-        <div>Move: WASD | Shoot: Left Mouse | Reload: R</div>
+        <div>Move: WASD | Shoot: Hold Left Mouse | Reload: R</div>
       </div>
     </div>
 
@@ -363,7 +364,11 @@
             <button id="equipSniperBtn" class="shopBtn" type="button">Equip Sniper</button>
             <div id="sniperStatus">Locked</div>
           </div>
-          <div class="slot">Damage Boost - Soon</div>
+          <div class="slot">
+            <button id="buyMinigunBtn" class="shopBtn" type="button">Buy Minigun (100 Keys)</button>
+            <button id="equipMinigunBtn" class="shopBtn" type="button">Equip Minigun</button>
+            <div id="minigunStatus">Locked</div>
+          </div>
           <div class="slot">Fire Rate Boost - Soon</div>
         </div>
       </div>
@@ -395,13 +400,15 @@
     const STORAGE_KEYS_KEY = "rivals_keys";
     const STORAGE_UNLOCKED_WEAPONS_KEY = "rivals_unlocked_weapons";
     const STORAGE_SNIPER_OWNED_KEY = "rivals_sniper_owned";
+    const STORAGE_MINIGUN_OWNED_KEY = "rivals_minigun_owned";
     const PLAYER_MAX_HP = 150;
     const ENEMY_COUNT = 30;
     const ENEMY_MAX_HP = 150;
     const SNIPER_COST = 25;
+    const MINIGUN_COST = 100;
     const SNIPER_MAG_SIZE = 5;
     const SNIPER_RESERVE_START = 10;
-    const SNIPER_RELOAD_MS = 1200;
+    const SNIPER_RELOAD_MS = 3000;
     const SNIPER_RIFLE_KILLS_TO_REARM = 5;
 
     function normalizeKeys(value) {
@@ -437,7 +444,7 @@
         if (typeof weaponId !== "string") continue;
         const cleanId = weaponId.trim().toLowerCase();
         if (!cleanId) continue;
-        if (cleanId === "rifle" || cleanId === "sniper") {
+        if (cleanId === "rifle" || cleanId === "sniper" || cleanId === "minigun") {
           unlocked.add(cleanId);
         }
       }
@@ -448,17 +455,21 @@
       try {
         const raw = localStorage.getItem(STORAGE_UNLOCKED_WEAPONS_KEY);
         const parsed = raw ? JSON.parse(raw) : null;
-        const fallbackOwned = localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1";
-        const normalized = normalizeUnlockedWeapons(parsed);
-        if (fallbackOwned && !normalized.includes("sniper")) {
-          return normalizeUnlockedWeapons([...normalized, "sniper"]);
+        const fallbackSniperOwned = localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1";
+        const fallbackMinigunOwned = localStorage.getItem(STORAGE_MINIGUN_OWNED_KEY) === "1";
+        const merged = [...normalizeUnlockedWeapons(parsed)];
+        if (fallbackSniperOwned && !merged.includes("sniper")) {
+          merged.push("sniper");
         }
-        return normalized;
+        if (fallbackMinigunOwned && !merged.includes("minigun")) {
+          merged.push("minigun");
+        }
+        return normalizeUnlockedWeapons(merged);
       } catch {
-        if (localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1") {
-          return normalizeUnlockedWeapons(["rifle", "sniper"]);
-        }
-        return normalizeUnlockedWeapons(null);
+        const fallback = ["rifle"];
+        if (localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1") fallback.push("sniper");
+        if (localStorage.getItem(STORAGE_MINIGUN_OWNED_KEY) === "1") fallback.push("minigun");
+        return normalizeUnlockedWeapons(fallback);
       }
     }
 
@@ -467,6 +478,7 @@
         const normalized = normalizeUnlockedWeapons(value);
         localStorage.setItem(STORAGE_UNLOCKED_WEAPONS_KEY, JSON.stringify(normalized));
         localStorage.setItem(STORAGE_SNIPER_OWNED_KEY, normalized.includes("sniper") ? "1" : "0");
+        localStorage.setItem(STORAGE_MINIGUN_OWNED_KEY, normalized.includes("minigun") ? "1" : "0");
       } catch {
         // Ignore storage failures (private mode/quota).
       }
@@ -496,9 +508,12 @@
     const playerList = document.getElementById("playerList");
     const weaponText = document.getElementById("weaponText");
     const buySniperBtn = document.getElementById("buySniperBtn");
+    const buyMinigunBtn = document.getElementById("buyMinigunBtn");
     const equipRifleBtn = document.getElementById("equipRifleBtn");
     const equipSniperBtn = document.getElementById("equipSniperBtn");
+    const equipMinigunBtn = document.getElementById("equipMinigunBtn");
     const sniperStatus = document.getElementById("sniperStatus");
+    const minigunStatus = document.getElementById("minigunStatus");
 
     const world = {
       width: 0,
@@ -530,6 +545,15 @@
         bulletSpeed: 2600,
         bulletLife: 1.6,
         cooldownMs: 1500
+      },
+      minigun: {
+        id: "minigun",
+        name: "Minigun",
+        damage: 8,
+        headshotMultiplier: 1.5,
+        bulletSpeed: 2100,
+        bulletLife: 0.9,
+        cooldownMs: 50
       }
     };
 
@@ -759,6 +783,23 @@
       updateEquipButtons();
     }
 
+    function updateMinigunUi() {
+      const unlocked = hasWeaponUnlocked("minigun");
+      if (unlocked) {
+        buyMinigunBtn.textContent = "Minigun Purchased";
+        buyMinigunBtn.disabled = true;
+        minigunStatus.textContent = "Damage 8 body / 12 head | 0.05s auto";
+        updateEquipButtons();
+        return;
+      }
+
+      buyMinigunBtn.textContent = "Buy Minigun (" + MINIGUN_COST + " Keys)";
+      const canAfford = state.keys >= MINIGUN_COST;
+      buyMinigunBtn.disabled = !canAfford;
+      minigunStatus.textContent = canAfford ? "Ready to buy" : "Need " + MINIGUN_COST + " keys";
+      updateEquipButtons();
+    }
+
     function updateEquipButtons() {
       const activeId = getActiveWeapon().id;
 
@@ -770,16 +811,22 @@
       if (!sniperOwned) {
         equipSniperBtn.disabled = true;
         equipSniperBtn.textContent = "Equip Sniper (Locked)";
-        return;
-      }
-      if (!sniperSelectable) {
+      } else if (!sniperSelectable) {
         equipSniperBtn.disabled = true;
         equipSniperBtn.textContent = "Equip Sniper (" + state.sniper.arKillsNeeded + " AR kills left)";
-        return;
+      } else {
+        equipSniperBtn.disabled = activeId === "sniper";
+        equipSniperBtn.textContent = activeId === "sniper" ? "Sniper Equipped" : "Equip Sniper";
       }
 
-      equipSniperBtn.disabled = activeId === "sniper";
-      equipSniperBtn.textContent = activeId === "sniper" ? "Sniper Equipped" : "Equip Sniper";
+      const minigunOwned = hasWeaponUnlocked("minigun");
+      if (!minigunOwned) {
+        equipMinigunBtn.disabled = true;
+        equipMinigunBtn.textContent = "Equip Minigun (Locked)";
+      } else {
+        equipMinigunBtn.disabled = activeId === "minigun";
+        equipMinigunBtn.textContent = activeId === "minigun" ? "Minigun Equipped" : "Equip Minigun";
+      }
     }
 
     function tryPurchaseSniper() {
@@ -791,6 +838,17 @@
       setActiveWeapon("sniper");
       updateHud();
       updateSniperUi();
+      syncProfileToServer();
+    }
+
+    function tryPurchaseMinigun() {
+      if (hasWeaponUnlocked("minigun")) return;
+      if (state.keys < MINIGUN_COST) return;
+      setLocalKeys(state.keys - MINIGUN_COST);
+      setLocalUnlockedWeapons([...state.unlockedWeapons, "minigun"]);
+      setActiveWeapon("minigun");
+      updateHud();
+      updateMinigunUi();
       syncProfileToServer();
     }
 
@@ -1069,6 +1127,7 @@
       enemyHpText.textContent = "Enemy HP: " + totalHp;
       updateWeaponHud();
       updateSniperUi();
+      updateMinigunUi();
     }
 
     function updatePlayer(dt) {
@@ -1085,8 +1144,16 @@
         moveY /= len;
       }
 
-      player.x += moveX * player.speed * dt;
-      player.y += moveY * player.speed * dt;
+      const weaponId = getActiveWeapon().id;
+      let speedMultiplier = 1;
+      if (weaponId === "sniper") {
+        speedMultiplier = 0.8;
+      } else if (weaponId === "minigun") {
+        speedMultiplier = 0.7;
+      }
+      const currentSpeed = player.speed * speedMultiplier;
+      player.x += moveX * currentSpeed * dt;
+      player.y += moveY * currentSpeed * dt;
       player.x = clamp(player.x, player.radius, world.width - player.radius);
       player.y = clamp(player.y, player.radius, world.height - player.radius);
     }
@@ -1325,7 +1392,11 @@
         if (state.network.connected) {
           sendNet({ type: "addKey", amount: 1 });
         }
-        state.enemies[bestIndex] = createEnemy();
+        state.enemies.splice(bestIndex, 1);
+        if (state.enemies.length === 0) {
+          spawnEnemies();
+          return;
+        }
       }
       updateHud();
     }
@@ -2075,11 +2146,17 @@
     buySniperBtn.addEventListener("click", () => {
       tryPurchaseSniper();
     });
+    buyMinigunBtn.addEventListener("click", () => {
+      tryPurchaseMinigun();
+    });
     equipRifleBtn.addEventListener("click", () => {
       setActiveWeapon("rifle");
     });
     equipSniperBtn.addEventListener("click", () => {
       setActiveWeapon("sniper");
+    });
+    equipMinigunBtn.addEventListener("click", () => {
+      setActiveWeapon("minigun");
     });
     nameBtn.addEventListener("click", () => submitNameSelection());
     changeNameBtn.addEventListener("click", () => {

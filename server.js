@@ -23,7 +23,13 @@ const WEAPONS = {
     id: "sniper",
     damage: 150,
     headshotMultiplier: 1,
-    cooldownMs: 1000
+    cooldownMs: 1500
+  },
+  minigun: {
+    id: "minigun",
+    damage: 8,
+    headshotMultiplier: 1.5,
+    cooldownMs: 50
   }
 };
 const DUEL_SITE_URL = process.env.DUEL_SITE_URL || "";
@@ -628,7 +634,8 @@ wss.on("connection", (socket) => {
             broadcastDuel(roomId, {
               type: "duelKill",
               killerId: duelMe.id,
-              targetId: target.id
+              targetId: target.id,
+              weaponId: weapon.id
             });
           }
         }
@@ -701,7 +708,8 @@ wss.on("connection", (socket) => {
                 sendTo(lobbySocket, {
                   type: "kill",
                   killerId: lobbyMe.id,
-                  targetId: target.id
+                  targetId: target.id,
+                  weaponId: weapon.id
                 });
               }
             }

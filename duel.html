@@ -151,7 +151,7 @@
     </div>
 
     <div id="bottomBar">
-      <div id="infoText">Move: WASD | Shoot: Left Mouse | Switch: 1-9 / Wheel</div>
+      <div id="infoText">Move: WASD | Shoot: Hold Left Mouse | Switch: 1-9 / Wheel</div>
       <button id="leaveBtn" type="button">Back To Lobby</button>
     </div>
   </div>
@@ -161,6 +161,7 @@
     const STORAGE_KEYS_KEY = "rivals_keys";
     const STORAGE_UNLOCKED_WEAPONS_KEY = "rivals_unlocked_weapons";
     const STORAGE_SNIPER_OWNED_KEY = "rivals_sniper_owned";
+    const STORAGE_MINIGUN_OWNED_KEY = "rivals_minigun_owned";
     const PLAYER_MAX_HP = 150;
 
     function normalizeKeys(value) {
@@ -195,7 +196,7 @@
         if (typeof weaponId !== "string") continue;
         const cleanId = weaponId.trim().toLowerCase();
         if (!cleanId) continue;
-        if (cleanId === "rifle" || cleanId === "sniper") {
+        if (cleanId === "rifle" || cleanId === "sniper" || cleanId === "minigun") {
           unlocked.add(cleanId);
         }
       }
@@ -206,17 +207,21 @@
       try {
         const raw = localStorage.getItem(STORAGE_UNLOCKED_WEAPONS_KEY);
         const parsed = raw ? JSON.parse(raw) : null;
-        const fallbackOwned = localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1";
-        const normalized = normalizeUnlockedWeapons(parsed);
-        if (fallbackOwned && !normalized.includes("sniper")) {
-          return normalizeUnlockedWeapons([...normalized, "sniper"]);
+        const fallbackSniperOwned = localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1";
+        const fallbackMinigunOwned = localStorage.getItem(STORAGE_MINIGUN_OWNED_KEY) === "1";
+        const merged = [...normalizeUnlockedWeapons(parsed)];
+        if (fallbackSniperOwned && !merged.includes("sniper")) {
+          merged.push("sniper");
         }
-        return normalized;
+        if (fallbackMinigunOwned && !merged.includes("minigun")) {
+          merged.push("minigun");
+        }
+        return normalizeUnlockedWeapons(merged);
       } catch {
-        if (localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1") {
-          return normalizeUnlockedWeapons(["rifle", "sniper"]);
-        }
-        return normalizeUnlockedWeapons(null);
+        const fallback = ["rifle"];
+        if (localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1") fallback.push("sniper");
+        if (localStorage.getItem(STORAGE_MINIGUN_OWNED_KEY) === "1") fallback.push("minigun");
+        return normalizeUnlockedWeapons(fallback);
       }
     }
 
@@ -225,6 +230,7 @@
         const normalized = normalizeUnlockedWeapons(value);
         localStorage.setItem(STORAGE_UNLOCKED_WEAPONS_KEY, JSON.stringify(normalized));
         localStorage.setItem(STORAGE_SNIPER_OWNED_KEY, normalized.includes("sniper") ? "1" : "0");
+        localStorage.setItem(STORAGE_MINIGUN_OWNED_KEY, normalized.includes("minigun") ? "1" : "0");
       } catch {
         // Ignore storage failures (private mode/quota).
       }
@@ -261,9 +267,18 @@
         name: "Sniper",
         damage: 150,
         headshotMultiplier: 1,
-        cooldownMs: 1000,
+        cooldownMs: 1500,
         bulletSpeed: 980,
         bulletLife: 1.4
+      },
+      minigun: {
+        id: "minigun",
+        name: "Minigun",
+        damage: 8,
+        headshotMultiplier: 1.5,
+        cooldownMs: 50,
+        bulletSpeed: 760,
+        bulletLife: 0.9
       }
     };
 
@@ -366,7 +381,7 @@
       const weapon = getActiveWeapon();
       const headDamage = getWeaponDamage(weapon, true);
       infoText.textContent =
-        "Move: WASD | Shoot: Left Mouse | Switch: 1-9 / Wheel | Gun: " +
+        "Move: WASD | Shoot: Hold Left Mouse | Switch: 1-9 / Wheel | Gun: " +
         weapon.name +
         " (" +
         weapon.damage +
@@ -516,8 +531,16 @@
         moveX /= len;
         moveY /= len;
       }
-      player.x = clamp(player.x + moveX * player.speed * dt, player.radius, world.width - player.radius);
-      player.y = clamp(player.y + moveY * player.speed * dt, player.radius, world.height - player.radius);
+      const weaponId = getActiveWeapon().id;
+      let speedMultiplier = 1;
+      if (weaponId === "sniper") {
+        speedMultiplier = 0.8;
+      } else if (weaponId === "minigun") {
+        speedMultiplier = 0.7;
+      }
+      const currentSpeed = player.speed * speedMultiplier;
+      player.x = clamp(player.x + moveX * currentSpeed * dt, player.radius, world.width - player.radius);
+      player.y = clamp(player.y + moveY * currentSpeed * dt, player.radius, world.height - player.radius);
     }
 
     function updateLocalBullets(dt) {
