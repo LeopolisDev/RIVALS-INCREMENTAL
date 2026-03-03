@@ -341,7 +341,7 @@
       </div>
       <div id="rightHud">
         <div id="weaponText">Gun: Assault Rifle (10 body / 15 head, 0.1s)</div>
-        <div>Move: WASD | Shoot: Left Mouse | Switch: 1/2</div>
+        <div>Move: WASD | Shoot: Left Mouse | Switch: 1-9 / Wheel | Reload: R</div>
       </div>
     </div>
 
@@ -392,6 +392,10 @@
     const ENEMY_COUNT = 3;
     const ENEMY_MAX_HP = 150;
     const SNIPER_COST = 25;
+    const SNIPER_MAG_SIZE = 5;
+    const SNIPER_RESERVE_START = 10;
+    const SNIPER_RELOAD_MS = 1200;
+    const SNIPER_RIFLE_KILLS_TO_REARM = 5;
 
     function normalizeKeys(value) {
       if (!Number.isFinite(value)) return 0;
@@ -508,7 +512,7 @@
         headshotMultiplier: 1,
         bulletSpeed: 2600,
         bulletLife: 1.6,
-        cooldownMs: 1000
+        cooldownMs: 1500
       }
     };
 
@@ -530,6 +534,14 @@
       mouse: { x: 0, y: 0, down: false },
       keys: loadStoredKeys(),
       unlockedWeapons: loadStoredUnlockedWeapons(),
+      sniper: {
+        mag: SNIPER_MAG_SIZE,
+        reserve: SNIPER_RESERVE_START,
+        reloading: false,
+        reloadUntilMs: 0,
+        lockedByDepletedAmmo: false,
+        arKillsNeeded: 0
+      },
       playerHp: PLAYER_MAX_HP,
       activeWeaponId: "rifle",
       lastShotTime: -Infinity,
@@ -580,8 +592,119 @@
       return state.unlockedWeapons.includes(weaponId);
     }
 
+    function isSniperTemporarilyLocked() {
+      return state.sniper.lockedByDepletedAmmo && state.sniper.arKillsNeeded > 0;
+    }
+
+    function canEquipWeapon(weaponId) {
+      if (weaponId === "sniper" && isSniperTemporarilyLocked()) return false;
+      return hasWeaponUnlocked(weaponId);
+    }
+
     function getOwnedWeaponIds() {
       return normalizeUnlockedWeapons(state.unlockedWeapons);
+    }
+
+    function getSelectableWeaponIds() {
+      const selectable = getOwnedWeaponIds().filter((weaponId) =>
+        canEquipWeapon(weaponId)
+      );
+      return selectable.length ? selectable : ["rifle"];
+    }
+
+    function refillSniperAmmo() {
+      state.sniper.mag = SNIPER_MAG_SIZE;
+      state.sniper.reserve = SNIPER_RESERVE_START;
+      state.sniper.reloading = false;
+      state.sniper.reloadUntilMs = 0;
+      state.sniper.lockedByDepletedAmmo = false;
+      state.sniper.arKillsNeeded = 0;
+    }
+
+    function updateSniperReload(nowMs) {
+      if (!state.sniper.reloading) return;
+      if (nowMs < state.sniper.reloadUntilMs) return;
+
+      state.sniper.reloading = false;
+      state.sniper.reloadUntilMs = 0;
+      const needed = SNIPER_MAG_SIZE - state.sniper.mag;
+      if (needed <= 0 || state.sniper.reserve <= 0) {
+        updateWeaponHud();
+        updateSniperUi();
+        return;
+      }
+
+      const loaded = Math.min(needed, state.sniper.reserve);
+      state.sniper.mag += loaded;
+      state.sniper.reserve -= loaded;
+      updateWeaponHud();
+      updateSniperUi();
+    }
+
+    function lockSniperUntilRifleKills() {
+      if (isSniperTemporarilyLocked()) return;
+      state.sniper.mag = 0;
+      state.sniper.reserve = 0;
+      state.sniper.reloading = false;
+      state.sniper.reloadUntilMs = 0;
+      state.sniper.lockedByDepletedAmmo = true;
+      state.sniper.arKillsNeeded = SNIPER_RIFLE_KILLS_TO_REARM;
+      setActiveWeapon("rifle");
+      updateWeaponHud();
+      updateSniperUi();
+    }
+
+    function startSniperReload(nowMs) {
+      if (!hasWeaponUnlocked("sniper")) return false;
+      if (isSniperTemporarilyLocked()) return false;
+      if (state.sniper.reloading) return false;
+      if (state.sniper.mag >= SNIPER_MAG_SIZE) return false;
+      if (state.sniper.reserve <= 0) {
+        if (state.sniper.mag <= 0) {
+          lockSniperUntilRifleKills();
+        }
+        return false;
+      }
+      state.sniper.reloading = true;
+      state.sniper.reloadUntilMs = nowMs + SNIPER_RELOAD_MS;
+      updateWeaponHud();
+      updateSniperUi();
+      return true;
+    }
+
+    function consumeSniperRound(nowMs) {
+      if (isSniperTemporarilyLocked()) return false;
+      if (state.sniper.reloading) return false;
+      if (state.sniper.mag <= 0) {
+        if (state.sniper.reserve > 0) {
+          startSniperReload(nowMs);
+        } else {
+          lockSniperUntilRifleKills();
+        }
+        return false;
+      }
+
+      state.sniper.mag -= 1;
+      if (state.sniper.mag <= 0) {
+        if (state.sniper.reserve > 0) {
+          startSniperReload(nowMs);
+        } else {
+          lockSniperUntilRifleKills();
+        }
+      } else {
+        updateWeaponHud();
+      }
+      return true;
+    }
+
+    function registerRifleKillForSniperUnlock() {
+      if (!isSniperTemporarilyLocked()) return;
+      state.sniper.arKillsNeeded = Math.max(0, state.sniper.arKillsNeeded - 1);
+      if (state.sniper.arKillsNeeded === 0) {
+        refillSniperAmmo();
+      }
+      updateWeaponHud();
+      updateSniperUi();
     }
 
     function syncProfileToServer() {
@@ -599,7 +722,14 @@
       if (unlocked) {
         buySniperBtn.textContent = "Sniper Purchased";
         buySniperBtn.disabled = true;
-        sniperStatus.textContent = "Unlocked (press 2 to equip)";
+        if (isSniperTemporarilyLocked()) {
+          sniperStatus.textContent =
+            "Out of sniper ammo. Get " + state.sniper.arKillsNeeded + " AR kills to rearm";
+        } else if (state.sniper.reloading) {
+          sniperStatus.textContent = "Reloading sniper...";
+        } else {
+          sniperStatus.textContent = "Unlocked (press 2, use wheel, press R to reload)";
+        }
         return;
       }
 
@@ -614,6 +744,7 @@
       if (state.keys < SNIPER_COST) return;
       setLocalKeys(state.keys - SNIPER_COST);
       setLocalUnlockedWeapons([...state.unlockedWeapons, "sniper"]);
+      refillSniperAmmo();
       setActiveWeapon("sniper");
       updateHud();
       updateSniperUi();
@@ -679,7 +810,7 @@
 
     function getActiveWeapon() {
       const active = getWeaponById(state.activeWeaponId);
-      if (hasWeaponUnlocked(active.id)) return active;
+      if (canEquipWeapon(active.id)) return active;
       return weapons.rifle;
     }
 
@@ -691,6 +822,15 @@
     function updateWeaponHud() {
       const weapon = getActiveWeapon();
       const headDamage = getWeaponDamage(weapon, true);
+      let suffix = "";
+      if (weapon.id === "sniper") {
+        suffix = " | Ammo: " + state.sniper.mag + "/" + state.sniper.reserve;
+        if (state.sniper.reloading) {
+          suffix += " (reloading)";
+        }
+      } else if (isSniperTemporarilyLocked()) {
+        suffix = " | Sniper unlock: " + state.sniper.arKillsNeeded + " AR kills";
+      }
       weaponText.textContent =
         "Gun: " +
         weapon.name +
@@ -700,13 +840,37 @@
         headDamage +
         " head, " +
         (weapon.cooldownMs / 1000).toFixed(1) +
-        "s)";
+        "s)" +
+        suffix;
     }
 
     function setActiveWeapon(weaponId) {
       const weapon = getWeaponById(weaponId);
-      state.activeWeaponId = hasWeaponUnlocked(weapon.id) ? weapon.id : "rifle";
+      state.activeWeaponId = canEquipWeapon(weapon.id) ? weapon.id : "rifle";
       updateWeaponHud();
+    }
+
+    function selectOwnedWeaponBySlot(slotIndex) {
+      if (!Number.isInteger(slotIndex) || slotIndex < 0) return false;
+      const selectableWeaponIds = getSelectableWeaponIds();
+      if (slotIndex >= selectableWeaponIds.length) return false;
+      setActiveWeapon(selectableWeaponIds[slotIndex]);
+      return true;
+    }
+
+    function cycleOwnedWeapon(step) {
+      const selectableWeaponIds = getSelectableWeaponIds();
+      if (selectableWeaponIds.length < 2) return false;
+
+      const currentId = getActiveWeapon().id;
+      let currentIndex = selectableWeaponIds.indexOf(currentId);
+      if (currentIndex < 0) currentIndex = 0;
+
+      const normalizedStep = step > 0 ? 1 : -1;
+      const nextIndex =
+        (currentIndex + normalizedStep + selectableWeaponIds.length) % selectableWeaponIds.length;
+      setActiveWeapon(selectableWeaponIds[nextIndex]);
+      return true;
     }
 
     function getHumanoidHitboxes(cx, cy, baseRadius) {
@@ -859,6 +1023,7 @@
         totalHp += Math.max(0, Math.floor(enemy.hp));
       }
       enemyHpText.textContent = "Enemy HP: " + totalHp;
+      updateWeaponHud();
       updateSniperUi();
     }
 
@@ -974,6 +1139,7 @@
 
     function spawnNetworkBulletVisual(ox, oy, dx, dy, weaponId) {
       const weapon = getWeaponById(weaponId);
+      if (weapon.id === "sniper") return;
       const pxOx = nxToPx(ox);
       const pyOy = nyToPy(oy);
       let pxDx = dx * world.width;
@@ -1108,6 +1274,9 @@
         popupColor
       );
       if (enemy.hp <= 0) {
+        if (weapon.id === "rifle") {
+          registerRifleKillForSniperUnlock();
+        }
         setLocalKeys(state.keys + 1);
         if (state.network.connected) {
           sendNet({ type: "addKey", amount: 1 });
@@ -1118,10 +1287,17 @@
     }
 
     function tryShoot(nowMs) {
+      updateSniperReload(nowMs);
       if (!state.mouse.down) return;
       const weapon = getActiveWeapon();
+      if (weapon.id === "sniper") {
+        if (isSniperTemporarilyLocked()) {
+          setActiveWeapon("rifle");
+          return;
+        }
+        if (state.sniper.reloading) return;
+      }
       if (nowMs - state.lastShotTime < weapon.cooldownMs) return;
-      state.lastShotTime = nowMs;
 
       let pxDx = state.mouse.x - player.x;
       let pxDy = state.mouse.y - player.y;
@@ -1137,8 +1313,15 @@
       netDx /= netLen;
       netDy /= netLen;
 
+      if (weapon.id === "sniper" && !consumeSniperRound(nowMs)) {
+        return;
+      }
+
+      state.lastShotTime = nowMs;
       applyPlayerShotHit(pxDx, pxDy, weapon);
-      spawnPlayerBullet(pxDx, pxDy, weapon);
+      if (weapon.id !== "sniper") {
+        spawnPlayerBullet(pxDx, pxDy, weapon);
+      }
       shootRemotePlayers(netDx, netDy, weapon);
     }
 
@@ -1321,6 +1504,8 @@
     }
 
     function drawLaser() {
+      if (getActiveWeapon().id !== "sniper") return;
+
       let dx = pxToNx(state.mouse.x) - pxToNx(player.x);
       let dy = pxToNy(state.mouse.y) - pxToNy(player.y);
       const len = Math.hypot(dx, dy);
@@ -1345,16 +1530,26 @@
         return;
       }
 
-      const key = typeof event.key === "string" ? event.key : "";
-      if (down && (event.code === "Digit1" || key === "1")) {
-        setActiveWeapon("rifle");
-        event.preventDefault();
-        return;
-      }
-      if (down && (event.code === "Digit2" || key === "2")) {
-        setActiveWeapon("sniper");
-        event.preventDefault();
-        return;
+      if (down) {
+        const key = typeof event.key === "string" ? event.key : "";
+        if (event.code === "KeyR" || key.toLowerCase() === "r") {
+          if (getActiveWeapon().id === "sniper" && startSniperReload(performance.now())) {
+            event.preventDefault();
+          }
+          return;
+        }
+
+        const codeMatch = /^Digit([1-9])$/.exec(event.code || "");
+        const slotFromCode = codeMatch ? Number(codeMatch[1]) - 1 : -1;
+        const slotFromKey = /^[1-9]$/.test(key) ? Number(key) - 1 : -1;
+        const slotIndex = slotFromCode >= 0 ? slotFromCode : slotFromKey;
+
+        if (slotIndex >= 0) {
+          if (selectOwnedWeaponBySlot(slotIndex)) {
+            event.preventDefault();
+          }
+          return;
+        }
       }
 
       const moveKey = getMovementKey(event);
@@ -1387,6 +1582,16 @@
     });
 
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    canvas.addEventListener(
+      "wheel",
+      (event) => {
+        if (event.deltaY === 0) return;
+        if (cycleOwnedWeapon(event.deltaY > 0 ? 1 : -1)) {
+          event.preventDefault();
+        }
+      },
+      { passive: false }
+    );
 
     queueBtn.addEventListener("click", () => {
       if (!state.network.connected) return;
@@ -1791,8 +1996,14 @@
           return;
         }
 
-        if (message.type === "kill" && message.targetId === state.network.myId) {
-          state.network.needsRespawnSync = true;
+        if (message.type === "kill") {
+          if (message.killerId === state.network.myId && message.weaponId === "rifle") {
+            registerRifleKillForSniperUnlock();
+          }
+          if (message.targetId === state.network.myId) {
+            state.network.needsRespawnSync = true;
+          }
+          return;
         }
       });
     }

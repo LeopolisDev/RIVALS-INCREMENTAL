@@ -151,7 +151,7 @@
     </div>
 
     <div id="bottomBar">
-      <div id="infoText">Move: WASD | Shoot: Left Mouse | Switch: 1/2</div>
+      <div id="infoText">Move: WASD | Shoot: Left Mouse | Switch: 1-9 / Wheel</div>
       <button id="leaveBtn" type="button">Back To Lobby</button>
     </div>
   </div>
@@ -330,11 +330,34 @@
       updateWeaponInfoText();
     }
 
+    function selectOwnedWeaponBySlot(slotIndex) {
+      if (!Number.isInteger(slotIndex) || slotIndex < 0) return false;
+      const ownedWeaponIds = getOwnedWeaponIds();
+      if (slotIndex >= ownedWeaponIds.length) return false;
+      setActiveWeapon(ownedWeaponIds[slotIndex]);
+      return true;
+    }
+
+    function cycleOwnedWeapon(step) {
+      const ownedWeaponIds = getOwnedWeaponIds();
+      if (ownedWeaponIds.length < 2) return false;
+
+      const currentId = getActiveWeapon().id;
+      let currentIndex = ownedWeaponIds.indexOf(currentId);
+      if (currentIndex < 0) currentIndex = 0;
+
+      const normalizedStep = step > 0 ? 1 : -1;
+      const nextIndex =
+        (currentIndex + normalizedStep + ownedWeaponIds.length) % ownedWeaponIds.length;
+      setActiveWeapon(ownedWeaponIds[nextIndex]);
+      return true;
+    }
+
     function updateWeaponInfoText() {
       const weapon = getActiveWeapon();
       const headDamage = getWeaponDamage(weapon, true);
       infoText.textContent =
-        "Move: WASD | Shoot: Left Mouse | Switch: 1/2 | Gun: " +
+        "Move: WASD | Shoot: Left Mouse | Switch: 1-9 / Wheel | Gun: " +
         weapon.name +
         " (" +
         weapon.damage +
@@ -453,6 +476,7 @@
 
     function spawnRemoteBullet(ox, oy, dx, dy, weaponId) {
       const weapon = getWeaponById(weaponId);
+      if (weapon.id === "sniper") return;
       const sx = nxToPx(ox);
       const sy = nyToPy(oy);
       let vx = dx * world.width;
@@ -558,7 +582,9 @@
       netDx /= netLen;
       netDy /= netLen;
 
-      spawnLocalBullet(pxDx, pxDy, weapon);
+      if (weapon.id !== "sniper") {
+        spawnLocalBullet(pxDx, pxDy, weapon);
+      }
       sendNet({
         type: "duelShoot",
         ox: pxToNx(player.x),
@@ -595,6 +621,8 @@
     }
 
     function drawLaser() {
+      if (getActiveWeapon().id !== "sniper") return;
+
       let dx = pxToNx(state.mouse.x) - pxToNx(player.x);
       let dy = pxToNy(state.mouse.y) - pxToNy(player.y);
       const len = Math.hypot(dx, dy);
@@ -889,16 +917,19 @@
     }
 
     function onKey(event, down) {
-      const key = typeof event.key === "string" ? event.key : "";
-      if (down && (event.code === "Digit1" || key === "1")) {
-        setActiveWeapon("rifle");
-        event.preventDefault();
-        return;
-      }
-      if (down && (event.code === "Digit2" || key === "2")) {
-        setActiveWeapon("sniper");
-        event.preventDefault();
-        return;
+      if (down) {
+        const key = typeof event.key === "string" ? event.key : "";
+        const codeMatch = /^Digit([1-9])$/.exec(event.code || "");
+        const slotFromCode = codeMatch ? Number(codeMatch[1]) - 1 : -1;
+        const slotFromKey = /^[1-9]$/.test(key) ? Number(key) - 1 : -1;
+        const slotIndex = slotFromCode >= 0 ? slotFromCode : slotFromKey;
+
+        if (slotIndex >= 0) {
+          if (selectOwnedWeaponBySlot(slotIndex)) {
+            event.preventDefault();
+          }
+          return;
+        }
       }
 
       const moveKey = getMovementKey(event);
@@ -924,6 +955,16 @@
       if (event.button === 0) state.mouse.down = false;
     });
     canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+    canvas.addEventListener(
+      "wheel",
+      (event) => {
+        if (event.deltaY === 0) return;
+        if (cycleOwnedWeapon(event.deltaY > 0 ? 1 : -1)) {
+          event.preventDefault();
+        }
+      },
+      { passive: false }
+    );
     leaveBtn.addEventListener("click", () => {
       window.location.href = "/";
     });
