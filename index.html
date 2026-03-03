@@ -345,7 +345,7 @@
       </div>
       <div id="rightHud">
         <div id="weaponText">Gun: Assault Rifle (10 body / 15 head, 0.1s)</div>
-        <div>Move: WASD | Shoot: Left Mouse | Switch: 1-9 / Wheel | Reload: R</div>
+        <div>Move: WASD | Shoot: Left Mouse | Reload: R</div>
       </div>
     </div>
 
@@ -394,8 +394,9 @@
     const STORAGE_NAME_KEY = "rivals_name";
     const STORAGE_KEYS_KEY = "rivals_keys";
     const STORAGE_UNLOCKED_WEAPONS_KEY = "rivals_unlocked_weapons";
+    const STORAGE_SNIPER_OWNED_KEY = "rivals_sniper_owned";
     const PLAYER_MAX_HP = 150;
-    const ENEMY_COUNT = 3;
+    const ENEMY_COUNT = 30;
     const ENEMY_MAX_HP = 150;
     const SNIPER_COST = 25;
     const SNIPER_MAG_SIZE = 5;
@@ -446,10 +447,17 @@
     function loadStoredUnlockedWeapons() {
       try {
         const raw = localStorage.getItem(STORAGE_UNLOCKED_WEAPONS_KEY);
-        if (!raw) return normalizeUnlockedWeapons(null);
-        const parsed = JSON.parse(raw);
-        return normalizeUnlockedWeapons(parsed);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const fallbackOwned = localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1";
+        const normalized = normalizeUnlockedWeapons(parsed);
+        if (fallbackOwned && !normalized.includes("sniper")) {
+          return normalizeUnlockedWeapons([...normalized, "sniper"]);
+        }
+        return normalized;
       } catch {
+        if (localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1") {
+          return normalizeUnlockedWeapons(["rifle", "sniper"]);
+        }
         return normalizeUnlockedWeapons(null);
       }
     }
@@ -458,6 +466,7 @@
       try {
         const normalized = normalizeUnlockedWeapons(value);
         localStorage.setItem(STORAGE_UNLOCKED_WEAPONS_KEY, JSON.stringify(normalized));
+        localStorage.setItem(STORAGE_SNIPER_OWNED_KEY, normalized.includes("sniper") ? "1" : "0");
       } catch {
         // Ignore storage failures (private mode/quota).
       }
@@ -730,13 +739,14 @@
       if (unlocked) {
         buySniperBtn.textContent = "Sniper Purchased";
         buySniperBtn.disabled = true;
+        const ammoText = "Sniper Ammo: " + state.sniper.mag + " | Reserve Ammo: " + state.sniper.reserve;
         if (isSniperTemporarilyLocked()) {
           sniperStatus.textContent =
-            "Out of sniper ammo. Get " + state.sniper.arKillsNeeded + " AR kills to rearm";
+            ammoText + " | Get " + state.sniper.arKillsNeeded + " AR kills to rearm";
         } else if (state.sniper.reloading) {
-          sniperStatus.textContent = "Reloading sniper...";
+          sniperStatus.textContent = ammoText + " | Reloading...";
         } else {
-          sniperStatus.textContent = "Unlocked (press 2, use wheel, press R to reload)";
+          sniperStatus.textContent = ammoText;
         }
         updateEquipButtons();
         return;
