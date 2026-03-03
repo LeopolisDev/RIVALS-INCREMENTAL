@@ -160,6 +160,7 @@
     window.RIVALS_WS_URL = "wss://rivals-incremental.onrender.com";
     const STORAGE_KEYS_KEY = "rivals_keys";
     const STORAGE_UNLOCKED_WEAPONS_KEY = "rivals_unlocked_weapons";
+    const STORAGE_SNIPER_OWNED_KEY = "rivals_sniper_owned";
     const PLAYER_MAX_HP = 150;
 
     function normalizeKeys(value) {
@@ -204,10 +205,17 @@
     function loadStoredUnlockedWeapons() {
       try {
         const raw = localStorage.getItem(STORAGE_UNLOCKED_WEAPONS_KEY);
-        if (!raw) return normalizeUnlockedWeapons(null);
-        const parsed = JSON.parse(raw);
-        return normalizeUnlockedWeapons(parsed);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const fallbackOwned = localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1";
+        const normalized = normalizeUnlockedWeapons(parsed);
+        if (fallbackOwned && !normalized.includes("sniper")) {
+          return normalizeUnlockedWeapons([...normalized, "sniper"]);
+        }
+        return normalized;
       } catch {
+        if (localStorage.getItem(STORAGE_SNIPER_OWNED_KEY) === "1") {
+          return normalizeUnlockedWeapons(["rifle", "sniper"]);
+        }
         return normalizeUnlockedWeapons(null);
       }
     }
@@ -216,6 +224,7 @@
       try {
         const normalized = normalizeUnlockedWeapons(value);
         localStorage.setItem(STORAGE_UNLOCKED_WEAPONS_KEY, JSON.stringify(normalized));
+        localStorage.setItem(STORAGE_SNIPER_OWNED_KEY, normalized.includes("sniper") ? "1" : "0");
       } catch {
         // Ignore storage failures (private mode/quota).
       }
