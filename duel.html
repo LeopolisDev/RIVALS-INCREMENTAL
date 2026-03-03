@@ -163,6 +163,8 @@
     const STORAGE_SNIPER_OWNED_KEY = "rivals_sniper_owned";
     const STORAGE_MINIGUN_OWNED_KEY = "rivals_minigun_owned";
     const PLAYER_MAX_HP = 150;
+    const MINIGUN_AMMO_START = 300;
+    const MINIGUN_RIFLE_KILLS_TO_REARM = 10;
 
     function normalizeKeys(value) {
       if (!Number.isFinite(value)) return 0;
@@ -288,6 +290,11 @@
       myId: null,
       keys: loadStoredKeys(),
       unlockedWeapons: loadStoredUnlockedWeapons(),
+      minigun: {
+        ammo: MINIGUN_AMMO_START,
+        lockedByDepletedAmmo: false,
+        arKillsNeeded: 0
+      },
       activeWeaponId: "rifle",
       lastShotTime: -Infinity,
       hp: PLAYER_MAX_HP,
@@ -329,6 +336,15 @@
       return state.unlockedWeapons.includes(weaponId);
     }
 
+    function isMinigunTemporarilyLocked() {
+      return state.minigun.lockedByDepletedAmmo && state.minigun.arKillsNeeded > 0;
+    }
+
+    function canEquipWeapon(weaponId) {
+      if (weaponId === "minigun" && isMinigunTemporarilyLocked()) return false;
+      return hasWeaponUnlocked(weaponId);
+    }
+
     function getWeaponById(weaponId) {
       return weapons[weaponId] || weapons.rifle;
     }
@@ -337,9 +353,54 @@
       return normalizeUnlockedWeapons(state.unlockedWeapons);
     }
 
+    function getSelectableWeaponIds() {
+      const selectable = getOwnedWeaponIds().filter((weaponId) => canEquipWeapon(weaponId));
+      return selectable.length ? selectable : ["rifle"];
+    }
+
+    function refillMinigunAmmo() {
+      state.minigun.ammo = MINIGUN_AMMO_START;
+      state.minigun.lockedByDepletedAmmo = false;
+      state.minigun.arKillsNeeded = 0;
+    }
+
+    function lockMinigunUntilRifleKills() {
+      if (isMinigunTemporarilyLocked()) return;
+      state.minigun.ammo = 0;
+      state.minigun.lockedByDepletedAmmo = true;
+      state.minigun.arKillsNeeded = MINIGUN_RIFLE_KILLS_TO_REARM;
+      setActiveWeapon("rifle");
+      updateWeaponInfoText();
+    }
+
+    function consumeMinigunRound() {
+      if (isMinigunTemporarilyLocked()) return false;
+      if (state.minigun.ammo <= 0) {
+        lockMinigunUntilRifleKills();
+        return false;
+      }
+
+      state.minigun.ammo -= 1;
+      if (state.minigun.ammo <= 0) {
+        lockMinigunUntilRifleKills();
+      } else {
+        updateWeaponInfoText();
+      }
+      return true;
+    }
+
+    function registerRifleKillForMinigunUnlock() {
+      if (!isMinigunTemporarilyLocked()) return;
+      state.minigun.arKillsNeeded = Math.max(0, state.minigun.arKillsNeeded - 1);
+      if (state.minigun.arKillsNeeded === 0) {
+        refillMinigunAmmo();
+      }
+      updateWeaponInfoText();
+    }
+
     function getActiveWeapon() {
       const active = getWeaponById(state.activeWeaponId);
-      if (hasWeaponUnlocked(active.id)) return active;
+      if (canEquipWeapon(active.id)) return active;
       return weapons.rifle;
     }
 
@@ -350,36 +411,42 @@
 
     function setActiveWeapon(weaponId) {
       const next = getWeaponById(weaponId);
-      state.activeWeaponId = hasWeaponUnlocked(next.id) ? next.id : "rifle";
+      state.activeWeaponId = canEquipWeapon(next.id) ? next.id : "rifle";
       updateWeaponInfoText();
     }
 
     function selectOwnedWeaponBySlot(slotIndex) {
       if (!Number.isInteger(slotIndex) || slotIndex < 0) return false;
-      const ownedWeaponIds = getOwnedWeaponIds();
-      if (slotIndex >= ownedWeaponIds.length) return false;
-      setActiveWeapon(ownedWeaponIds[slotIndex]);
+      const selectableWeaponIds = getSelectableWeaponIds();
+      if (slotIndex >= selectableWeaponIds.length) return false;
+      setActiveWeapon(selectableWeaponIds[slotIndex]);
       return true;
     }
 
     function cycleOwnedWeapon(step) {
-      const ownedWeaponIds = getOwnedWeaponIds();
-      if (ownedWeaponIds.length < 2) return false;
+      const selectableWeaponIds = getSelectableWeaponIds();
+      if (selectableWeaponIds.length < 2) return false;
 
       const currentId = getActiveWeapon().id;
-      let currentIndex = ownedWeaponIds.indexOf(currentId);
+      let currentIndex = selectableWeaponIds.indexOf(currentId);
       if (currentIndex < 0) currentIndex = 0;
 
       const normalizedStep = step > 0 ? 1 : -1;
       const nextIndex =
-        (currentIndex + normalizedStep + ownedWeaponIds.length) % ownedWeaponIds.length;
-      setActiveWeapon(ownedWeaponIds[nextIndex]);
+        (currentIndex + normalizedStep + selectableWeaponIds.length) % selectableWeaponIds.length;
+      setActiveWeapon(selectableWeaponIds[nextIndex]);
       return true;
     }
 
     function updateWeaponInfoText() {
       const weapon = getActiveWeapon();
       const headDamage = getWeaponDamage(weapon, true);
+      let suffix = "";
+      if (weapon.id === "minigun") {
+        suffix = " | Ammo: " + state.minigun.ammo + "/" + MINIGUN_AMMO_START;
+      } else if (isMinigunTemporarilyLocked()) {
+        suffix = " | Minigun unlock: " + state.minigun.arKillsNeeded + " AR kills";
+      }
       infoText.textContent =
         "Move: WASD | Shoot: Hold Left Mouse | Switch: 1-9 / Wheel | Gun: " +
         weapon.name +
@@ -389,7 +456,8 @@
         headDamage +
         " head, " +
         (weapon.cooldownMs / 1000).toFixed(1) +
-        "s)";
+        "s)" +
+        suffix;
     }
 
     function randomRange(min, max) {
@@ -597,8 +665,11 @@
     function tryShoot(nowMs) {
       if (!state.connected || !state.myId || !state.mouse.down) return;
       const weapon = getActiveWeapon();
+      if (weapon.id === "minigun" && isMinigunTemporarilyLocked()) {
+        setActiveWeapon("rifle");
+        return;
+      }
       if (nowMs - state.lastShotTime < weapon.cooldownMs) return;
-      state.lastShotTime = nowMs;
 
       let pxDx = state.mouse.x - player.x;
       let pxDy = state.mouse.y - player.y;
@@ -614,6 +685,11 @@
       netDx /= netLen;
       netDy /= netLen;
 
+      if (weapon.id === "minigun" && !consumeMinigunRound()) {
+        return;
+      }
+
+      state.lastShotTime = nowMs;
       if (weapon.id !== "sniper") {
         spawnLocalBullet(pxDx, pxDy, weapon);
       }
@@ -892,6 +968,9 @@
 
         if (message.type === "duelKill") {
           if (message.killerId === state.myId) {
+            if (message.weaponId === "rifle") {
+              registerRifleKillForMinigunUnlock();
+            }
             state.bannerText = "Eliminated Opponent";
           } else if (message.targetId === state.myId) {
             state.bannerText = "You Were Eliminated";
