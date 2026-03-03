@@ -6,8 +6,26 @@ const { WebSocketServer } = require("ws");
 const PORT = process.env.PORT || 3000;
 const PLAYER_MAX_HP = 150;
 const PLAYER_RADIUS_N = 0.022;
-const FIRE_COOLDOWN_MS = 100;
-const DEFAULT_DAMAGE = 10;
+const HUMANOID_HITBOX = {
+  bodyRadiusScale: 0.72,
+  bodyOffsetYScale: 0.18,
+  headRadiusScale: 0.42,
+  headJoinScale: 0.55
+};
+const WEAPONS = {
+  rifle: {
+    id: "rifle",
+    damage: 10,
+    headshotMultiplier: 1.5,
+    cooldownMs: 100
+  },
+  sniper: {
+    id: "sniper",
+    damage: 150,
+    headshotMultiplier: 1,
+    cooldownMs: 1000
+  }
+};
 const DUEL_SITE_URL = process.env.DUEL_SITE_URL || "";
 const BUILD_ID = process.env.BUILD_ID || String(Date.now());
 
@@ -112,23 +130,91 @@ function buildDuelUrl(roomId, token) {
   return "/duel.html?" + query;
 }
 
-function rayHitsCircleNormalized(ox, oy, dx, dy, cx, cy, radius) {
+function getWeaponById(weaponId) {
+  if (typeof weaponId === "string" && WEAPONS[weaponId]) {
+    return WEAPONS[weaponId];
+  }
+  return WEAPONS.rifle;
+}
+
+function normalizeUnlockedWeapons(value) {
+  const unlocked = new Set(["rifle"]);
+  if (!Array.isArray(value)) {
+    return Array.from(unlocked);
+  }
+  for (const weaponId of value) {
+    if (typeof weaponId !== "string") continue;
+    const cleanId = weaponId.trim().toLowerCase();
+    if (!cleanId || !WEAPONS[cleanId]) continue;
+    unlocked.add(cleanId);
+  }
+  return Array.from(unlocked);
+}
+
+function mergeUnlockedWeapons(current, incoming) {
+  return normalizeUnlockedWeapons([
+    ...normalizeUnlockedWeapons(current),
+    ...normalizeUnlockedWeapons(incoming)
+  ]);
+}
+
+function isWeaponUnlocked(player, weaponId) {
+  return normalizeUnlockedWeapons(player.unlockedWeapons).includes(weaponId);
+}
+
+function resolveWeaponForPlayer(player, requestedWeaponId) {
+  const requested = getWeaponById(requestedWeaponId);
+  if (isWeaponUnlocked(player, requested.id)) return requested;
+  return WEAPONS.rifle;
+}
+
+function getHumanoidHitboxesNormalized(cx, cy, baseRadius) {
+  const bodyRadius = baseRadius * HUMANOID_HITBOX.bodyRadiusScale;
+  const bodyY = cy + baseRadius * HUMANOID_HITBOX.bodyOffsetYScale;
+  const headRadius = baseRadius * HUMANOID_HITBOX.headRadiusScale;
+  const headY = bodyY - bodyRadius - headRadius * HUMANOID_HITBOX.headJoinScale;
+  return {
+    body: { x: cx, y: bodyY, radius: bodyRadius },
+    head: { x: cx, y: headY, radius: headRadius }
+  };
+}
+
+function rayCircleHitDistanceNormalized(ox, oy, dx, dy, circle) {
   const length = Math.hypot(dx, dy);
-  if (!length) return false;
+  if (!length) return null;
   const ndx = dx / length;
   const ndy = dy / length;
 
-  const relX = ox - cx;
-  const relY = oy - cy;
+  const relX = ox - circle.x;
+  const relY = oy - circle.y;
   const b = 2 * (relX * ndx + relY * ndy);
-  const c = relX * relX + relY * relY - radius * radius;
+  const c = relX * relX + relY * relY - circle.radius * circle.radius;
   const disc = b * b - 4 * c;
-  if (disc < 0) return false;
+  if (disc < 0) return null;
 
   const sqrtDisc = Math.sqrt(disc);
-  const t1 = (-b - sqrtDisc) / 2;
-  const t2 = (-b + sqrtDisc) / 2;
-  return t1 >= 0 || t2 >= 0;
+  const nearT = (-b - sqrtDisc) / 2;
+  if (nearT >= 0) return nearT;
+  const farT = (-b + sqrtDisc) / 2;
+  if (farT >= 0) return farT;
+  return null;
+}
+
+function rayHitsHumanoidNormalized(ox, oy, dx, dy, cx, cy, baseRadius) {
+  const hitboxes = getHumanoidHitboxesNormalized(cx, cy, baseRadius);
+  const headT = rayCircleHitDistanceNormalized(ox, oy, dx, dy, hitboxes.head);
+  const bodyT = rayCircleHitDistanceNormalized(ox, oy, dx, dy, hitboxes.body);
+
+  if (headT == null && bodyT == null) return null;
+  if (headT != null && (bodyT == null || headT <= bodyT)) {
+    return { part: "head", distance: headT };
+  }
+  return { part: "body", distance: bodyT };
+}
+
+function getShotDamage(weapon, isHeadshot) {
+  if (!isHeadshot) return weapon.damage;
+  return Math.round(weapon.damage * weapon.headshotMultiplier);
 }
 
 function sendTo(socket, payload) {
@@ -146,6 +232,7 @@ function snapshotPlayer(p) {
     hp: p.hp,
     maxHp: PLAYER_MAX_HP,
     keys: p.keys,
+    unlockedWeapons: normalizeUnlockedWeapons(p.unlockedWeapons),
     aimX: p.aimX,
     aimY: p.aimY,
     firing: p.firing
@@ -288,6 +375,20 @@ function handleDuelJoin(socket, message) {
   socket.mode = "duel";
   socket.roomId = roomId;
   const lobbyMe = lobbyPlayers.get(socket.playerId);
+  const incomingKeys = Number.isFinite(message.keys) ? clamp(Math.round(message.keys), 0, 1000000) : null;
+  const incomingUnlocked = normalizeUnlockedWeapons(message.unlockedWeapons);
+  let baseKeys = 0;
+  let baseUnlocked = normalizeUnlockedWeapons(null);
+  if (lobbyMe) {
+    const lobbyKeys = Math.max(0, Math.floor(lobbyMe.keys || 0));
+    baseKeys = incomingKeys == null ? lobbyKeys : Math.max(lobbyKeys, incomingKeys);
+    baseUnlocked = mergeUnlockedWeapons(lobbyMe.unlockedWeapons, incomingUnlocked);
+    lobbyMe.keys = baseKeys;
+    lobbyMe.unlockedWeapons = baseUnlocked;
+  } else {
+    baseKeys = incomingKeys == null ? 0 : incomingKeys;
+    baseUnlocked = incomingUnlocked;
+  }
   removeFromQueue(socket.playerId);
   lobbyPlayers.delete(socket.playerId);
 
@@ -301,7 +402,8 @@ function handleDuelJoin(socket, message) {
     aimY: 0.5,
     firing: false,
     hp: PLAYER_MAX_HP,
-    keys: lobbyMe ? Math.max(0, Math.floor(lobbyMe.keys || 0)) : 0,
+    keys: baseKeys,
+    unlockedWeapons: baseUnlocked,
     lastShotAt: 0
   };
 
@@ -352,6 +454,7 @@ function cleanupFromDuel(socket, reason) {
         firing: false,
         hp: PLAYER_MAX_HP,
         keys: room.players.get(otherId).keys || 0,
+        unlockedWeapons: normalizeUnlockedWeapons(room.players.get(otherId).unlockedWeapons),
         lastShotAt: room.players.get(otherId).lastShotAt || 0
       });
       sendTo(otherSocket, { type: "duelEnded", reason });
@@ -381,6 +484,7 @@ wss.on("connection", (socket) => {
     firing: false,
     hp: PLAYER_MAX_HP,
     keys: 0,
+    unlockedWeapons: normalizeUnlockedWeapons(null),
     lastShotAt: 0
   });
 
@@ -444,12 +548,16 @@ wss.on("connection", (socket) => {
       if (Number.isFinite(message.keys)) {
         lobbyMe.keys = clamp(Math.round(message.keys), 0, 1000000);
       }
+      if (Array.isArray(message.unlockedWeapons)) {
+        lobbyMe.unlockedWeapons = mergeUnlockedWeapons(lobbyMe.unlockedWeapons, message.unlockedWeapons);
+      }
       if (Number.isFinite(message.hp)) {
         lobbyMe.hp = clamp(Math.round(message.hp), 0, PLAYER_MAX_HP);
       }
       sendTo(socket, {
         type: "profileSynced",
         keys: lobbyMe.keys,
+        unlockedWeapons: normalizeUnlockedWeapons(lobbyMe.unlockedWeapons),
         hp: lobbyMe.hp
       });
       return;
@@ -477,19 +585,15 @@ wss.on("connection", (socket) => {
       }
 
       if (message.type === "duelShoot") {
+        const weapon = resolveWeaponForPlayer(duelMe, message.weaponId);
         const now = Date.now();
-        if (now - duelMe.lastShotAt < FIRE_COOLDOWN_MS) return;
+        if (now - duelMe.lastShotAt < weapon.cooldownMs) return;
         duelMe.lastShotAt = now;
 
         const ox = Number.isFinite(message.ox) ? message.ox : duelMe.x;
         const oy = Number.isFinite(message.oy) ? message.oy : duelMe.y;
         const dx = Number.isFinite(message.dx) ? message.dx : 0;
         const dy = Number.isFinite(message.dy) ? message.dy : 0;
-        const damage = clamp(
-          Number.isFinite(message.damage) ? Math.round(message.damage) : DEFAULT_DAMAGE,
-          1,
-          100
-        );
 
         broadcastDuel(roomId, {
           type: "duelShotFired",
@@ -497,13 +601,16 @@ wss.on("connection", (socket) => {
           ox,
           oy,
           dx,
-          dy
+          dy,
+          weaponId: weapon.id
         });
 
         for (const target of room.players.values()) {
           if (target.id === duelMe.id) continue;
           if (target.hp <= 0) continue;
-          if (!rayHitsCircleNormalized(ox, oy, dx, dy, target.x, target.y, PLAYER_RADIUS_N)) continue;
+          const hit = rayHitsHumanoidNormalized(ox, oy, dx, dy, target.x, target.y, PLAYER_RADIUS_N);
+          if (!hit) continue;
+          const damage = getShotDamage(weapon, hit.part === "head");
 
           target.hp = clamp(target.hp - damage, 0, PLAYER_MAX_HP);
           broadcastDuel(roomId, {
@@ -552,27 +659,25 @@ wss.on("connection", (socket) => {
       }
 
       if (message.type === "shoot") {
+        const weapon = resolveWeaponForPlayer(lobbyMe, message.weaponId);
         const now = Date.now();
-        if (now - lobbyMe.lastShotAt < FIRE_COOLDOWN_MS) return;
+        if (now - lobbyMe.lastShotAt < weapon.cooldownMs) return;
         lobbyMe.lastShotAt = now;
 
         const ox = Number.isFinite(message.ox) ? message.ox : lobbyMe.x;
         const oy = Number.isFinite(message.oy) ? message.oy : lobbyMe.y;
         const dx = Number.isFinite(message.dx) ? message.dx : 0;
         const dy = Number.isFinite(message.dy) ? message.dy : 0;
-        const damage = clamp(
-          Number.isFinite(message.damage) ? Math.round(message.damage) : DEFAULT_DAMAGE,
-          1,
-          100
-        );
 
         for (const target of lobbyPlayers.values()) {
           if (target.id === lobbyMe.id) continue;
           if (target.hp <= 0) continue;
 
-          if (!rayHitsCircleNormalized(ox, oy, dx, dy, target.x, target.y, PLAYER_RADIUS_N)) {
+          const hit = rayHitsHumanoidNormalized(ox, oy, dx, dy, target.x, target.y, PLAYER_RADIUS_N);
+          if (!hit) {
             continue;
           }
+          const damage = getShotDamage(weapon, hit.part === "head");
 
           target.hp = clamp(target.hp - damage, 0, PLAYER_MAX_HP);
           for (const lobbySocket of sockets.values()) {
@@ -611,7 +716,8 @@ wss.on("connection", (socket) => {
               ox,
               oy,
               dx,
-              dy
+              dy,
+              weaponId: weapon.id
             });
           }
         }

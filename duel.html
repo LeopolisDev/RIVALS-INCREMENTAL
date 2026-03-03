@@ -151,7 +151,7 @@
     </div>
 
     <div id="bottomBar">
-      <div id="infoText">Move: WASD | Shoot: Left Mouse | Gun: Assault Rifle (10 dmg, 0.1s)</div>
+      <div id="infoText">Move: WASD | Shoot: Left Mouse | Switch: 1/2</div>
       <button id="leaveBtn" type="button">Back To Lobby</button>
     </div>
   </div>
@@ -159,6 +159,8 @@
   <script>
     window.RIVALS_WS_URL = "wss://rivals-incremental.onrender.com";
     const STORAGE_KEYS_KEY = "rivals_keys";
+    const STORAGE_UNLOCKED_WEAPONS_KEY = "rivals_unlocked_weapons";
+    const PLAYER_MAX_HP = 150;
 
     function normalizeKeys(value) {
       if (!Number.isFinite(value)) return 0;
@@ -183,6 +185,42 @@
       }
     }
 
+    function normalizeUnlockedWeapons(value) {
+      const unlocked = new Set(["rifle"]);
+      if (!Array.isArray(value)) {
+        return Array.from(unlocked);
+      }
+      for (const weaponId of value) {
+        if (typeof weaponId !== "string") continue;
+        const cleanId = weaponId.trim().toLowerCase();
+        if (!cleanId) continue;
+        if (cleanId === "rifle" || cleanId === "sniper") {
+          unlocked.add(cleanId);
+        }
+      }
+      return Array.from(unlocked);
+    }
+
+    function loadStoredUnlockedWeapons() {
+      try {
+        const raw = localStorage.getItem(STORAGE_UNLOCKED_WEAPONS_KEY);
+        if (!raw) return normalizeUnlockedWeapons(null);
+        const parsed = JSON.parse(raw);
+        return normalizeUnlockedWeapons(parsed);
+      } catch {
+        return normalizeUnlockedWeapons(null);
+      }
+    }
+
+    function saveStoredUnlockedWeapons(value) {
+      try {
+        const normalized = normalizeUnlockedWeapons(value);
+        localStorage.setItem(STORAGE_UNLOCKED_WEAPONS_KEY, JSON.stringify(normalized));
+      } catch {
+        // Ignore storage failures (private mode/quota).
+      }
+    }
+
     const params = new URLSearchParams(window.location.search);
     const roomId = params.get("room") || "";
     const token = params.get("token") || "";
@@ -194,18 +232,41 @@
     const keysText = document.getElementById("keysText");
     const myHpText = document.getElementById("myHpText");
     const oppHpText = document.getElementById("oppHpText");
+    const infoText = document.getElementById("infoText");
     const leaveBtn = document.getElementById("leaveBtn");
 
     const world = { width: 0, height: 0 };
     const player = { x: 0, y: 0, radius: 16, speed: 280 };
-    const gun = { damage: 10, cooldownMs: 100, bulletSpeed: 720, bulletLife: 1.2, lastShotTime: -Infinity };
+    const weapons = {
+      rifle: {
+        id: "rifle",
+        name: "Assault Rifle",
+        damage: 10,
+        headshotMultiplier: 1.5,
+        cooldownMs: 100,
+        bulletSpeed: 720,
+        bulletLife: 1.2
+      },
+      sniper: {
+        id: "sniper",
+        name: "Sniper",
+        damage: 150,
+        headshotMultiplier: 1,
+        cooldownMs: 1000,
+        bulletSpeed: 980,
+        bulletLife: 1.4
+      }
+    };
 
     const state = {
       socket: null,
       connected: false,
       myId: null,
       keys: loadStoredKeys(),
-      hp: 100,
+      unlockedWeapons: loadStoredUnlockedWeapons(),
+      activeWeaponId: "rifle",
+      lastShotTime: -Infinity,
+      hp: PLAYER_MAX_HP,
       pressed: { w: false, a: false, s: false, d: false },
       mouse: { x: 0, y: 0, down: false },
       remotePlayers: new Map(),
@@ -225,6 +286,63 @@
       state.keys = normalized;
       saveStoredKeys(normalized);
       return true;
+    }
+
+    function setLocalUnlockedWeapons(nextUnlocked) {
+      const normalized = normalizeUnlockedWeapons(nextUnlocked);
+      if (
+        normalized.length === state.unlockedWeapons.length &&
+        normalized.every((weaponId, index) => weaponId === state.unlockedWeapons[index])
+      ) {
+        return false;
+      }
+      state.unlockedWeapons = normalized;
+      saveStoredUnlockedWeapons(normalized);
+      return true;
+    }
+
+    function hasWeaponUnlocked(weaponId) {
+      return state.unlockedWeapons.includes(weaponId);
+    }
+
+    function getWeaponById(weaponId) {
+      return weapons[weaponId] || weapons.rifle;
+    }
+
+    function getOwnedWeaponIds() {
+      return normalizeUnlockedWeapons(state.unlockedWeapons);
+    }
+
+    function getActiveWeapon() {
+      const active = getWeaponById(state.activeWeaponId);
+      if (hasWeaponUnlocked(active.id)) return active;
+      return weapons.rifle;
+    }
+
+    function getWeaponDamage(weapon, isHeadshot) {
+      if (!isHeadshot) return weapon.damage;
+      return Math.round(weapon.damage * weapon.headshotMultiplier);
+    }
+
+    function setActiveWeapon(weaponId) {
+      const next = getWeaponById(weaponId);
+      state.activeWeaponId = hasWeaponUnlocked(next.id) ? next.id : "rifle";
+      updateWeaponInfoText();
+    }
+
+    function updateWeaponInfoText() {
+      const weapon = getActiveWeapon();
+      const headDamage = getWeaponDamage(weapon, true);
+      infoText.textContent =
+        "Move: WASD | Shoot: Left Mouse | Switch: 1/2 | Gun: " +
+        weapon.name +
+        " (" +
+        weapon.damage +
+        " body / " +
+        headDamage +
+        " head, " +
+        (weapon.cooldownMs / 1000).toFixed(1) +
+        "s)";
     }
 
     function randomRange(min, max) {
@@ -322,18 +440,19 @@
       });
     }
 
-    function spawnLocalBullet(dirX, dirY) {
+    function spawnLocalBullet(dirX, dirY, weapon) {
       const startOffset = player.radius + 4;
       state.localBullets.push({
         x: player.x + dirX * startOffset,
         y: player.y + dirY * startOffset,
-        vx: dirX * gun.bulletSpeed,
-        vy: dirY * gun.bulletSpeed,
-        life: gun.bulletLife
+        vx: dirX * weapon.bulletSpeed,
+        vy: dirY * weapon.bulletSpeed,
+        life: weapon.bulletLife
       });
     }
 
-    function spawnRemoteBullet(ox, oy, dx, dy) {
+    function spawnRemoteBullet(ox, oy, dx, dy, weaponId) {
+      const weapon = getWeaponById(weaponId);
       const sx = nxToPx(ox);
       const sy = nyToPy(oy);
       let vx = dx * world.width;
@@ -346,9 +465,9 @@
       state.remoteBullets.push({
         x: sx,
         y: sy,
-        vx: vx * gun.bulletSpeed,
-        vy: vy * gun.bulletSpeed,
-        life: gun.bulletLife
+        vx: vx * weapon.bulletSpeed,
+        vy: vy * weapon.bulletSpeed,
+        life: weapon.bulletLife
       });
     }
 
@@ -421,8 +540,9 @@
 
     function tryShoot(nowMs) {
       if (!state.connected || !state.myId || !state.mouse.down) return;
-      if (nowMs - gun.lastShotTime < gun.cooldownMs) return;
-      gun.lastShotTime = nowMs;
+      const weapon = getActiveWeapon();
+      if (nowMs - state.lastShotTime < weapon.cooldownMs) return;
+      state.lastShotTime = nowMs;
 
       let pxDx = state.mouse.x - player.x;
       let pxDy = state.mouse.y - player.y;
@@ -438,14 +558,14 @@
       netDx /= netLen;
       netDy /= netLen;
 
-      spawnLocalBullet(pxDx, pxDy);
+      spawnLocalBullet(pxDx, pxDy, weapon);
       sendNet({
         type: "duelShoot",
         ox: pxToNx(player.x),
         oy: pxToNy(player.y),
         dx: netDx,
         dy: netDy,
-        damage: gun.damage
+        weaponId: weapon.id
       });
     }
 
@@ -504,7 +624,7 @@
       ctx.stroke();
 
       const hpW = 64;
-      const hpR = clamp(state.hp / 100, 0, 1);
+      const hpR = clamp(state.hp / PLAYER_MAX_HP, 0, 1);
       ctx.fillStyle = "rgba(0,0,0,0.45)";
       ctx.fillRect(player.x - hpW / 2, player.y - player.radius - 14, hpW, 6);
       ctx.fillStyle = "#57e07f";
@@ -525,7 +645,7 @@
         ctx.stroke();
 
         const hpW = 58;
-        const hpR = clamp(p.hp / 100, 0, 1);
+        const hpR = clamp(p.hp / (p.maxHp || PLAYER_MAX_HP), 0, 1);
         ctx.fillStyle = "rgba(0,0,0,0.45)";
         ctx.fillRect(px - hpW / 2, py - player.radius - 14, hpW, 6);
         ctx.fillStyle = "#57e07f";
@@ -635,7 +755,13 @@
       socket.addEventListener("open", () => {
         state.connected = true;
         statusText.textContent = "Connected. Joining match...";
-        sendNet({ type: "duelJoin", room: roomId, token });
+        sendNet({
+          type: "duelJoin",
+          room: roomId,
+          token,
+          keys: state.keys,
+          unlockedWeapons: getOwnedWeaponIds()
+        });
       });
 
       socket.addEventListener("close", () => {
@@ -669,10 +795,14 @@
               const previousHp = state.hp;
               state.hp = p.hp;
               setLocalKeys(p.keys);
+              if (Array.isArray(p.unlockedWeapons)) {
+                setLocalUnlockedWeapons(p.unlockedWeapons);
+              }
               syncLocalPlayerFromServer(p, previousHp);
             }
           }
           state.remotePlayers = map;
+          setActiveWeapon(state.activeWeaponId);
           updateHud();
           return;
         }
@@ -695,7 +825,7 @@
             Number.isFinite(message.dx) &&
             Number.isFinite(message.dy)
           ) {
-            spawnRemoteBullet(message.ox, message.oy, message.dx, message.dy);
+            spawnRemoteBullet(message.ox, message.oy, message.dx, message.dy, message.weaponId);
           }
           return;
         }
@@ -759,6 +889,18 @@
     }
 
     function onKey(event, down) {
+      const key = typeof event.key === "string" ? event.key : "";
+      if (down && (event.code === "Digit1" || key === "1")) {
+        setActiveWeapon("rifle");
+        event.preventDefault();
+        return;
+      }
+      if (down && (event.code === "Digit2" || key === "2")) {
+        setActiveWeapon("sniper");
+        event.preventDefault();
+        return;
+      }
+
       const moveKey = getMovementKey(event);
       if (moveKey) {
         state.pressed[moveKey] = down;
@@ -788,6 +930,7 @@
 
     resize();
     updateHud();
+    setActiveWeapon(state.activeWeaponId);
     connect();
 
     let lastTime = performance.now();

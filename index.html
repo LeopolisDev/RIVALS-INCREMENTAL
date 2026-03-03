@@ -286,6 +286,27 @@
       color: rgba(232, 244, 255, 0.9);
     }
 
+    .shopBtn {
+      width: 100%;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      background: rgba(255, 255, 255, 0.08);
+      color: #e8f4ff;
+      border-radius: 8px;
+      font-size: 12px;
+      padding: 7px 8px;
+      cursor: pointer;
+    }
+
+    .shopBtn:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    #sniperStatus {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #cbe9ff;
+    }
+
     @media (max-width: 760px) {
       #gameShell {
         height: auto;
@@ -319,8 +340,8 @@
         </div>
       </div>
       <div id="rightHud">
-        <div>Gun: Assault Rifle (10 dmg, 0.1s)</div>
-        <div>Move: WASD | Shoot: Left Mouse</div>
+        <div id="weaponText">Gun: Assault Rifle (10 body / 15 head, 0.1s)</div>
+        <div>Move: WASD | Shoot: Left Mouse | Switch: 1/2</div>
       </div>
     </div>
 
@@ -330,9 +351,12 @@
 
     <div id="upgradePanel">
       <div>
-        <div id="upgradeTitle">Guns / Upgrades (spend keys) - placeholder row</div>
+        <div id="upgradeTitle">Guns / Upgrades (spend keys)</div>
         <div id="upgradeSlots">
-          <div class="slot">Rifle Lv2 - Soon</div>
+          <div class="slot">
+            <button id="buySniperBtn" class="shopBtn" type="button">Buy Sniper (25 Keys)</button>
+            <div id="sniperStatus">Locked</div>
+          </div>
           <div class="slot">Damage Boost - Soon</div>
           <div class="slot">Fire Rate Boost - Soon</div>
         </div>
@@ -363,9 +387,11 @@
     window.RIVALS_WS_URL = "wss://rivals-incremental.onrender.com";
     const STORAGE_NAME_KEY = "rivals_name";
     const STORAGE_KEYS_KEY = "rivals_keys";
+    const STORAGE_UNLOCKED_WEAPONS_KEY = "rivals_unlocked_weapons";
     const PLAYER_MAX_HP = 150;
     const ENEMY_COUNT = 3;
     const ENEMY_MAX_HP = 150;
+    const SNIPER_COST = 25;
 
     function normalizeKeys(value) {
       if (!Number.isFinite(value)) return 0;
@@ -386,6 +412,42 @@
     function saveStoredKeys(value) {
       try {
         localStorage.setItem(STORAGE_KEYS_KEY, String(normalizeKeys(value)));
+      } catch {
+        // Ignore storage failures (private mode/quota).
+      }
+    }
+
+    function normalizeUnlockedWeapons(value) {
+      const unlocked = new Set(["rifle"]);
+      if (!Array.isArray(value)) {
+        return Array.from(unlocked);
+      }
+      for (const weaponId of value) {
+        if (typeof weaponId !== "string") continue;
+        const cleanId = weaponId.trim().toLowerCase();
+        if (!cleanId) continue;
+        if (cleanId === "rifle" || cleanId === "sniper") {
+          unlocked.add(cleanId);
+        }
+      }
+      return Array.from(unlocked);
+    }
+
+    function loadStoredUnlockedWeapons() {
+      try {
+        const raw = localStorage.getItem(STORAGE_UNLOCKED_WEAPONS_KEY);
+        if (!raw) return normalizeUnlockedWeapons(null);
+        const parsed = JSON.parse(raw);
+        return normalizeUnlockedWeapons(parsed);
+      } catch {
+        return normalizeUnlockedWeapons(null);
+      }
+    }
+
+    function saveStoredUnlockedWeapons(value) {
+      try {
+        const normalized = normalizeUnlockedWeapons(value);
+        localStorage.setItem(STORAGE_UNLOCKED_WEAPONS_KEY, JSON.stringify(normalized));
       } catch {
         // Ignore storage failures (private mode/quota).
       }
@@ -413,6 +475,9 @@
     const nameModal = document.getElementById("nameModal");
     const nameModalHint = document.getElementById("nameModalHint");
     const playerList = document.getElementById("playerList");
+    const weaponText = document.getElementById("weaponText");
+    const buySniperBtn = document.getElementById("buySniperBtn");
+    const sniperStatus = document.getElementById("sniperStatus");
 
     const world = {
       width: 0,
@@ -426,12 +491,32 @@
       speed: 280
     };
 
-    const gun = {
-      damage: 10,
-      bulletSpeed: 2200,
-      bulletLife: 1.2,
-      cooldownMs: 100,
-      lastShotTime: -Infinity
+    const weapons = {
+      rifle: {
+        id: "rifle",
+        name: "Assault Rifle",
+        damage: 10,
+        headshotMultiplier: 1.5,
+        bulletSpeed: 2200,
+        bulletLife: 1.2,
+        cooldownMs: 100
+      },
+      sniper: {
+        id: "sniper",
+        name: "Sniper",
+        damage: 150,
+        headshotMultiplier: 1,
+        bulletSpeed: 2600,
+        bulletLife: 1.6,
+        cooldownMs: 1000
+      }
+    };
+
+    const humanoidHitbox = {
+      bodyRadiusScale: 0.72,
+      bodyOffsetYScale: 0.18,
+      headRadiusScale: 0.42,
+      headJoinScale: 0.55
     };
 
     const enemyGun = {
@@ -444,7 +529,10 @@
       pressed: { w: false, a: false, s: false, d: false },
       mouse: { x: 0, y: 0, down: false },
       keys: loadStoredKeys(),
+      unlockedWeapons: loadStoredUnlockedWeapons(),
       playerHp: PLAYER_MAX_HP,
+      activeWeaponId: "rifle",
+      lastShotTime: -Infinity,
       enemies: [],
       playerBullets: [],
       enemyBullets: [],
@@ -473,6 +561,63 @@
       state.keys = normalized;
       saveStoredKeys(normalized);
       return true;
+    }
+
+    function setLocalUnlockedWeapons(nextUnlocked) {
+      const normalized = normalizeUnlockedWeapons(nextUnlocked);
+      if (
+        normalized.length === state.unlockedWeapons.length &&
+        normalized.every((weaponId, index) => weaponId === state.unlockedWeapons[index])
+      ) {
+        return false;
+      }
+      state.unlockedWeapons = normalized;
+      saveStoredUnlockedWeapons(normalized);
+      return true;
+    }
+
+    function hasWeaponUnlocked(weaponId) {
+      return state.unlockedWeapons.includes(weaponId);
+    }
+
+    function getOwnedWeaponIds() {
+      return normalizeUnlockedWeapons(state.unlockedWeapons);
+    }
+
+    function syncProfileToServer() {
+      if (!state.network.connected) return;
+      sendNet({
+        type: "syncProfile",
+        keys: state.keys,
+        hp: state.playerHp,
+        unlockedWeapons: getOwnedWeaponIds()
+      });
+    }
+
+    function updateSniperUi() {
+      const unlocked = hasWeaponUnlocked("sniper");
+      if (unlocked) {
+        buySniperBtn.textContent = "Sniper Purchased";
+        buySniperBtn.disabled = true;
+        sniperStatus.textContent = "Unlocked (press 2 to equip)";
+        return;
+      }
+
+      buySniperBtn.textContent = "Buy Sniper (" + SNIPER_COST + " Keys)";
+      const canAfford = state.keys >= SNIPER_COST;
+      buySniperBtn.disabled = !canAfford;
+      sniperStatus.textContent = canAfford ? "Ready to buy" : "Need " + SNIPER_COST + " keys";
+    }
+
+    function tryPurchaseSniper() {
+      if (hasWeaponUnlocked("sniper")) return;
+      if (state.keys < SNIPER_COST) return;
+      setLocalKeys(state.keys - SNIPER_COST);
+      setLocalUnlockedWeapons([...state.unlockedWeapons, "sniper"]);
+      setActiveWeapon("sniper");
+      updateHud();
+      updateSniperUi();
+      syncProfileToServer();
     }
 
     function setNameMessage(text) {
@@ -526,6 +671,100 @@
 
     function clamp(value, min, max) {
       return Math.max(min, Math.min(max, value));
+    }
+
+    function getWeaponById(id) {
+      return weapons[id] || weapons.rifle;
+    }
+
+    function getActiveWeapon() {
+      const active = getWeaponById(state.activeWeaponId);
+      if (hasWeaponUnlocked(active.id)) return active;
+      return weapons.rifle;
+    }
+
+    function getWeaponDamage(weapon, isHeadshot) {
+      if (!isHeadshot) return weapon.damage;
+      return Math.round(weapon.damage * weapon.headshotMultiplier);
+    }
+
+    function updateWeaponHud() {
+      const weapon = getActiveWeapon();
+      const headDamage = getWeaponDamage(weapon, true);
+      weaponText.textContent =
+        "Gun: " +
+        weapon.name +
+        " (" +
+        weapon.damage +
+        " body / " +
+        headDamage +
+        " head, " +
+        (weapon.cooldownMs / 1000).toFixed(1) +
+        "s)";
+    }
+
+    function setActiveWeapon(weaponId) {
+      const weapon = getWeaponById(weaponId);
+      state.activeWeaponId = hasWeaponUnlocked(weapon.id) ? weapon.id : "rifle";
+      updateWeaponHud();
+    }
+
+    function getHumanoidHitboxes(cx, cy, baseRadius) {
+      const bodyRadius = baseRadius * humanoidHitbox.bodyRadiusScale;
+      const bodyY = cy + baseRadius * humanoidHitbox.bodyOffsetYScale;
+      const headRadius = baseRadius * humanoidHitbox.headRadiusScale;
+      const headY = bodyY - bodyRadius - headRadius * humanoidHitbox.headJoinScale;
+
+      return {
+        body: { x: cx, y: bodyY, radius: bodyRadius },
+        head: { x: cx, y: headY, radius: headRadius }
+      };
+    }
+
+    function pointHitsCircle(px, py, circle) {
+      const dx = px - circle.x;
+      const dy = py - circle.y;
+      return dx * dx + dy * dy <= circle.radius * circle.radius;
+    }
+
+    function pointHitsHumanoid(px, py, cx, cy, baseRadius) {
+      const hitboxes = getHumanoidHitboxes(cx, cy, baseRadius);
+      if (pointHitsCircle(px, py, hitboxes.head)) return "head";
+      if (pointHitsCircle(px, py, hitboxes.body)) return "body";
+      return "";
+    }
+
+    function rayCircleHitDistance(ox, oy, dx, dy, circle) {
+      const relX = ox - circle.x;
+      const relY = oy - circle.y;
+      const b = 2 * (relX * dx + relY * dy);
+      const c = relX * relX + relY * relY - circle.radius * circle.radius;
+      const disc = b * b - 4 * c;
+      if (disc < 0) return null;
+
+      const sqrtDisc = Math.sqrt(disc);
+      const nearT = (-b - sqrtDisc) / 2;
+      if (nearT >= 0) return nearT;
+      const farT = (-b + sqrtDisc) / 2;
+      if (farT >= 0) return farT;
+      return null;
+    }
+
+    function rayHitsHumanoid(ox, oy, dx, dy, cx, cy, baseRadius) {
+      const hitboxes = getHumanoidHitboxes(cx, cy, baseRadius);
+      const headT = rayCircleHitDistance(ox, oy, dx, dy, hitboxes.head);
+      const bodyT = rayCircleHitDistance(ox, oy, dx, dy, hitboxes.body);
+
+      if (headT == null && bodyT == null) return null;
+      if (headT != null && (bodyT == null || headT <= bodyT)) {
+        return { part: "head", distance: headT };
+      }
+      return { part: "body", distance: bodyT };
+    }
+
+    function getHumanoidTopY(cx, cy, baseRadius) {
+      const hitboxes = getHumanoidHitboxes(cx, cy, baseRadius);
+      return Math.min(hitboxes.head.y - hitboxes.head.radius, hitboxes.body.y - hitboxes.body.radius);
     }
 
     function pxToNx(x) {
@@ -620,6 +859,7 @@
         totalHp += Math.max(0, Math.floor(enemy.hp));
       }
       enemyHpText.textContent = "Enemy HP: " + totalHp;
+      updateSniperUi();
     }
 
     function updatePlayer(dt) {
@@ -707,10 +947,11 @@
           continue;
         }
 
-        const dx = bullet.x - player.x;
-        const dy = bullet.y - player.y;
-        if (dx * dx + dy * dy <= player.radius * player.radius) {
-          applyDamageToLocalPlayer(bullet.damage, player.x, player.y);
+        const hitPart = pointHitsHumanoid(bullet.x, bullet.y, player.x, player.y, player.radius);
+        if (hitPart) {
+          const playerHitboxes = getHumanoidHitboxes(player.x, player.y, player.radius);
+          const impact = hitPart === "head" ? playerHitboxes.head : playerHitboxes.body;
+          applyDamageToLocalPlayer(bullet.damage, impact.x, impact.y);
           continue;
         }
 
@@ -719,19 +960,20 @@
       state.enemyBullets = next;
     }
 
-    function spawnPlayerBullet(dirX, dirY) {
+    function spawnPlayerBullet(dirX, dirY, weapon) {
       const startOffset = player.radius + 4;
       state.playerBullets.push({
         x: player.x + dirX * startOffset,
         y: player.y + dirY * startOffset,
-        vx: dirX * gun.bulletSpeed,
-        vy: dirY * gun.bulletSpeed,
-        damage: gun.damage,
-        life: gun.bulletLife
+        vx: dirX * weapon.bulletSpeed,
+        vy: dirY * weapon.bulletSpeed,
+        damage: weapon.damage,
+        life: weapon.bulletLife
       });
     }
 
-    function spawnNetworkBulletVisual(ox, oy, dx, dy) {
+    function spawnNetworkBulletVisual(ox, oy, dx, dy, weaponId) {
+      const weapon = getWeaponById(weaponId);
       const pxOx = nxToPx(ox);
       const pyOy = nyToPy(oy);
       let pxDx = dx * world.width;
@@ -743,9 +985,9 @@
       state.networkBullets.push({
         x: pxOx,
         y: pyOy,
-        vx: pxDx * gun.bulletSpeed,
-        vy: pyDy * gun.bulletSpeed,
-        life: gun.bulletLife
+        vx: pxDx * weapon.bulletSpeed,
+        vy: pyDy * weapon.bulletSpeed,
+        life: weapon.bulletLife
       });
     }
 
@@ -764,9 +1006,7 @@
           if (netPlayer.id === state.network.myId) continue;
           const px = nxToPx(netPlayer.x);
           const py = nyToPy(netPlayer.y);
-          const dx = bullet.x - px;
-          const dy = bullet.y - py;
-          if (dx * dx + dy * dy <= player.radius * player.radius) {
+          if (pointHitsHumanoid(bullet.x, bullet.y, px, py, player.radius)) {
             hit = true;
             break;
           }
@@ -827,7 +1067,7 @@
       updateHud();
     }
 
-    function shootRemotePlayers(dirX, dirY) {
+    function shootRemotePlayers(dirX, dirY, weapon) {
       if (!state.network.connected) return;
       sendNet({
         type: "shoot",
@@ -835,42 +1075,38 @@
         oy: pxToNy(player.y),
         dx: dirX,
         dy: dirY,
-        damage: gun.damage
+        weaponId: weapon.id
       });
     }
 
-    function rayHitsEnemy(enemy, ox, oy, dx, dy) {
-      const toCx = enemy.x - ox;
-      const toCy = enemy.y - oy;
-      const t = toCx * dx + toCy * dy;
-      if (t < 0) return null;
-
-      const closestX = ox + dx * t;
-      const closestY = oy + dy * t;
-      const offX = enemy.x - closestX;
-      const offY = enemy.y - closestY;
-      if (offX * offX + offY * offY > enemy.radius * enemy.radius) return null;
-      return t;
-    }
-
-    function applyPlayerShotHit(dirX, dirY) {
+    function applyPlayerShotHit(dirX, dirY, weapon) {
       let bestIndex = -1;
-      let bestDist = Infinity;
+      let bestHit = null;
 
       for (let i = 0; i < state.enemies.length; i += 1) {
         const enemy = state.enemies[i];
-        const t = rayHitsEnemy(enemy, player.x, player.y, dirX, dirY);
-        if (t == null) continue;
-        if (t >= bestDist) continue;
-        bestDist = t;
+        const hit = rayHitsHumanoid(player.x, player.y, dirX, dirY, enemy.x, enemy.y, enemy.radius);
+        if (!hit) continue;
+        if (bestHit && hit.distance >= bestHit.distance) continue;
+        bestHit = hit;
         bestIndex = i;
       }
 
-      if (bestIndex < 0) return;
+      if (bestIndex < 0 || !bestHit) return;
 
       const enemy = state.enemies[bestIndex];
-      enemy.hp -= gun.damage;
-      addDamagePopup(enemy.x + randomRange(-7, 7), enemy.y + randomRange(-7, 7), gun.damage);
+      const isHeadshot = bestHit.part === "head";
+      const damage = getWeaponDamage(weapon, isHeadshot);
+      enemy.hp -= damage;
+      const enemyHitboxes = getHumanoidHitboxes(enemy.x, enemy.y, enemy.radius);
+      const impact = isHeadshot ? enemyHitboxes.head : enemyHitboxes.body;
+      const popupColor = isHeadshot ? "rgba(255, 220, 84, 1)" : "rgba(255, 36, 36, 1)";
+      addDamagePopup(
+        impact.x + randomRange(-6, 6),
+        impact.y + randomRange(-6, 6),
+        damage,
+        popupColor
+      );
       if (enemy.hp <= 0) {
         setLocalKeys(state.keys + 1);
         if (state.network.connected) {
@@ -883,8 +1119,9 @@
 
     function tryShoot(nowMs) {
       if (!state.mouse.down) return;
-      if (nowMs - gun.lastShotTime < gun.cooldownMs) return;
-      gun.lastShotTime = nowMs;
+      const weapon = getActiveWeapon();
+      if (nowMs - state.lastShotTime < weapon.cooldownMs) return;
+      state.lastShotTime = nowMs;
 
       let pxDx = state.mouse.x - player.x;
       let pxDy = state.mouse.y - player.y;
@@ -900,9 +1137,9 @@
       netDx /= netLen;
       netDy /= netLen;
 
-      applyPlayerShotHit(pxDx, pxDy);
-      spawnPlayerBullet(pxDx, pxDy);
-      shootRemotePlayers(netDx, netDy);
+      applyPlayerShotHit(pxDx, pxDy, weapon);
+      spawnPlayerBullet(pxDx, pxDy, weapon);
+      shootRemotePlayers(netDx, netDy, weapon);
     }
 
     function draw() {
@@ -931,19 +1168,42 @@
       drawPlayer();
     }
 
-    function drawPlayer() {
+    function drawHumanoid(cx, cy, radius, colors) {
+      const hitboxes = getHumanoidHitboxes(cx, cy, radius);
+      const bodyColor = colors.body || "#ffffff";
+      const headColor = colors.head || bodyColor;
+      const strokeColor = colors.stroke || "rgba(255,255,255,0.75)";
+
       ctx.beginPath();
-      ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
-      ctx.fillStyle = "#68c8ff";
+      ctx.arc(hitboxes.body.x, hitboxes.body.y, hitboxes.body.radius, 0, Math.PI * 2);
+      ctx.fillStyle = bodyColor;
       ctx.fill();
       ctx.lineWidth = 2;
-      ctx.strokeStyle = "rgba(255,255,255,0.75)";
+      ctx.strokeStyle = strokeColor;
       ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(hitboxes.head.x, hitboxes.head.y, hitboxes.head.radius, 0, Math.PI * 2);
+      ctx.fillStyle = headColor;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = strokeColor;
+      ctx.stroke();
+
+      return hitboxes;
+    }
+
+    function drawPlayer() {
+      drawHumanoid(player.x, player.y, player.radius, {
+        body: "#68c8ff",
+        head: "#91dbff",
+        stroke: "rgba(255,255,255,0.75)"
+      });
 
       const hpWidth = 64;
       const hpRatio = clamp(state.playerHp / PLAYER_MAX_HP, 0, 1);
       const hpX = player.x - hpWidth * 0.5;
-      const hpY = player.y - player.radius - 14;
+      const hpY = getHumanoidTopY(player.x, player.y, player.radius) - 14;
       ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
       ctx.fillRect(hpX, hpY, hpWidth, 6);
       ctx.fillStyle = "#57e07f";
@@ -952,19 +1212,21 @@
 
     function drawEnemies() {
       for (const enemy of state.enemies) {
-        ctx.beginPath();
-        ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
-        ctx.fillStyle = "#ff4c4c";
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "rgba(255,255,255,0.6)";
-        ctx.stroke();
+        drawHumanoid(enemy.x, enemy.y, enemy.radius, {
+          body: "#ff4c4c",
+          head: "#ff8484",
+          stroke: "rgba(255,255,255,0.6)"
+        });
 
         const barWidth = 76;
         const barHeight = 8;
         const hpRatio = clamp(enemy.hp / enemy.maxHp, 0, 1);
         const barX = enemy.x - barWidth * 0.5;
-        const barY = enemy.y + enemy.radius + 10;
+        const hitboxes = getHumanoidHitboxes(enemy.x, enemy.y, enemy.radius);
+        const barY = Math.max(
+          hitboxes.body.y + hitboxes.body.radius,
+          hitboxes.head.y + hitboxes.head.radius
+        ) + 10;
 
         ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
         ctx.fillRect(barX, barY, barWidth, barHeight);
@@ -1015,26 +1277,25 @@
         const px = nxToPx(netPlayer.x);
         const py = nyToPy(netPlayer.y);
 
-        ctx.beginPath();
-        ctx.arc(px, py, player.radius, 0, Math.PI * 2);
-        ctx.fillStyle = "#ffd26a";
-        ctx.fill();
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = "rgba(60, 40, 0, 0.8)";
-        ctx.stroke();
+        drawHumanoid(px, py, player.radius, {
+          body: "#ffd26a",
+          head: "#ffe4a5",
+          stroke: "rgba(60, 40, 0, 0.8)"
+        });
 
         const hpW = 58;
         const hpR = clamp(netPlayer.hp / (netPlayer.maxHp || PLAYER_MAX_HP), 0, 1);
+        const hpY = getHumanoidTopY(px, py, player.radius) - 14;
         ctx.fillStyle = "rgba(0,0,0,0.4)";
-        ctx.fillRect(px - hpW / 2, py - player.radius - 14, hpW, 6);
+        ctx.fillRect(px - hpW / 2, hpY, hpW, 6);
         ctx.fillStyle = "#57e07f";
-        ctx.fillRect(px - hpW / 2, py - player.radius - 14, hpW * hpR, 6);
+        ctx.fillRect(px - hpW / 2, hpY, hpW * hpR, 6);
 
         ctx.textAlign = "center";
         ctx.textBaseline = "bottom";
         ctx.font = "bold 11px Segoe UI";
         ctx.fillStyle = "#fff0b6";
-        ctx.fillText(netPlayer.name, px, py - player.radius - 16);
+        ctx.fillText(netPlayer.name, px, hpY - 2);
       }
     }
 
@@ -1083,6 +1344,19 @@
       if (isTypingElement(event.target)) {
         return;
       }
+
+      const key = typeof event.key === "string" ? event.key : "";
+      if (down && (event.code === "Digit1" || key === "1")) {
+        setActiveWeapon("rifle");
+        event.preventDefault();
+        return;
+      }
+      if (down && (event.code === "Digit2" || key === "2")) {
+        setActiveWeapon("sniper");
+        event.preventDefault();
+        return;
+      }
+
       const moveKey = getMovementKey(event);
       if (moveKey) {
         state.pressed[moveKey] = down;
@@ -1326,7 +1600,7 @@
           setNameMessage("Name: choose a unique name");
           setNameModalVisible(true);
         }
-        sendNet({ type: "syncProfile", keys: state.keys, hp: state.playerHp });
+        syncProfileToServer();
         updateQueueUi();
       });
 
@@ -1364,11 +1638,22 @@
             player.y = nyToPy(message.player.y);
             state.playerHp = message.player.hp;
             const serverKeys = normalizeKeys(message.player.keys);
-            const mergedKeys = Math.max(serverKeys, loadStoredKeys());
+            const localKeys = loadStoredKeys();
+            const mergedKeys = Math.max(serverKeys, localKeys);
+            const localUnlocked = loadStoredUnlockedWeapons();
+            const serverUnlocked = normalizeUnlockedWeapons(message.player.unlockedWeapons);
+            const mergedUnlocked = normalizeUnlockedWeapons([...serverUnlocked, ...localUnlocked]);
             setLocalKeys(mergedKeys);
-            if (mergedKeys !== serverKeys) {
-              sendNet({ type: "syncProfile", keys: mergedKeys, hp: state.playerHp });
+            setLocalUnlockedWeapons(mergedUnlocked);
+            const needsKeySync = mergedKeys !== serverKeys;
+            const needsUnlockSync =
+              mergedUnlocked.length !== serverUnlocked.length ||
+              mergedUnlocked.some((weaponId, index) => weaponId !== serverUnlocked[index]);
+            if (needsKeySync || needsUnlockSync) {
+              syncProfileToServer();
             }
+            setActiveWeapon(state.activeWeaponId);
+            updateSniperUi();
             updateHud();
           }
           return;
@@ -1409,9 +1694,14 @@
           if (Number.isFinite(message.keys)) {
             setLocalKeys(message.keys);
           }
+          if (Array.isArray(message.unlockedWeapons)) {
+            setLocalUnlockedWeapons(message.unlockedWeapons);
+          }
           if (Number.isFinite(message.hp)) {
             state.playerHp = clamp(Math.round(message.hp), 0, PLAYER_MAX_HP);
           }
+          setActiveWeapon(state.activeWeaponId);
+          updateSniperUi();
           updateHud();
           return;
         }
@@ -1455,7 +1745,10 @@
             map.set(p.id, p);
             if (p.id === state.network.myId) {
               state.playerHp = p.hp;
-              setLocalKeys(Math.max(state.keys, p.keys));
+              setLocalKeys(p.keys);
+              if (Array.isArray(p.unlockedWeapons)) {
+                setLocalUnlockedWeapons(p.unlockedWeapons);
+              }
               if (state.network.needsRespawnSync) {
                 player.x = nxToPx(p.x);
                 player.y = nyToPy(p.y);
@@ -1464,6 +1757,8 @@
             }
           }
           state.network.remotePlayers = map;
+          setActiveWeapon(state.activeWeaponId);
+          updateSniperUi();
           updateLobbyList();
           updateHud();
           return;
@@ -1491,7 +1786,7 @@
             Number.isFinite(message.dx) &&
             Number.isFinite(message.dy)
           ) {
-            spawnNetworkBulletVisual(message.ox, message.oy, message.dx, message.dy);
+            spawnNetworkBulletVisual(message.ox, message.oy, message.dx, message.dy, message.weaponId);
           }
           return;
         }
@@ -1521,6 +1816,10 @@
     resize();
     spawnEnemies();
     updateHud();
+    setActiveWeapon(state.activeWeaponId);
+    buySniperBtn.addEventListener("click", () => {
+      tryPurchaseSniper();
+    });
     nameBtn.addEventListener("click", () => submitNameSelection());
     changeNameBtn.addEventListener("click", () => {
       if (!state.network.connected) {
